@@ -181,18 +181,26 @@ export const ProgramKerjaView: React.FC<ProgramKerjaViewProps> = ({
     currentPage * itemsPerPage
   );
 
-  // Perhitungan Akumulasi Finansial dalam Miliar
+  // Perhitungan Akumulasi Finansial dalam Miliar dengan pemisahan Accrual & NPP OGP
   const financialTotals = useMemo(() => {
     let totalRkap = 0;
     let totalKontrak = 0;
     let totalRilis = 0;
+    let totalAccrue = 0;
+    let totalNppSudahOgp = 0;
+    let totalNppBelumOgp = 0;
     let totalAktual = 0;
+    let totalSisaAccrue = 0;
 
     filteredList.forEach((p) => {
       totalRkap += p.nilaiCapexRkap || 0;
       totalKontrak += p.nilaiKontrak || 0;
       totalRilis += p.nilaiRilis || 0;
+      totalAccrue += p.nilaiAccrue || 0;
+      totalNppSudahOgp += p.nilaiOgp || 0;
+      totalNppBelumOgp += p.belumOgp || 0;
       totalAktual += p.nilaiAktual || 0;
+      totalSisaAccrue += p.sisaAccrue || 0;
     });
 
     const totalSisaPembayaran = totalKontrak - totalAktual;
@@ -202,8 +210,12 @@ export const ProgramKerjaView: React.FC<ProgramKerjaViewProps> = ({
       totalRkap,
       totalKontrak,
       totalRilis,
+      totalAccrue,
+      totalNppSudahOgp,
+      totalNppBelumOgp,
       totalAktual,
       totalSisaPembayaran,
+      totalSisaAccrue,
       avgSerapan,
       count: filteredList.length
     };
@@ -354,91 +366,125 @@ export const ProgramKerjaView: React.FC<ProgramKerjaViewProps> = ({
         </div>
       </div>
 
-      {/* Financial KPI Summary Strip (Satuan Miliar) */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-        <div className="bg-[#111e3f] border border-[#203463] p-3.5 rounded-xl shadow-md">
+      {/* Financial KPI Summary Strip (Satuan Miliar) - Pemisahan Accrual & NPP OGP */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5">
+        <div className="bg-[#111e3f] border border-[#203463] p-3 rounded-xl shadow-md">
           <div className="flex items-center justify-between text-slate-400 mb-1">
-            <span className="text-[11px] font-bold tracking-wider uppercase text-slate-300">Total RKAP (Miliar)</span>
-            <Coins className="w-4 h-4 text-amber-400" />
+            <span className="text-[10px] font-bold tracking-wider uppercase text-slate-300">RKAP (M)</span>
+            <Coins className="w-3.5 h-3.5 text-amber-400" />
           </div>
-          <div className="flex items-baseline gap-1">
-            <span className="text-xl font-extrabold text-white font-mono tabular-nums">
+          <div className="flex items-baseline gap-0.5">
+            <span className="text-lg font-extrabold text-white font-mono tabular-nums">
               {formatMiliar(financialTotals.totalRkap)}
             </span>
-            <span className="text-xs text-slate-400 font-semibold">M</span>
+            <span className="text-[10px] text-slate-400 font-semibold">M</span>
           </div>
-          <p className="text-[10px] text-slate-400 mt-1">
-            Plafon CAPEX ({financialTotals.count} Proker)
-          </p>
+          <p className="text-[9px] text-slate-400 mt-0.5">Plafon CAPEX</p>
         </div>
 
-        <div className="bg-[#111e3f] border border-[#203463] p-3.5 rounded-xl shadow-md">
+        <div className="bg-[#111e3f] border border-[#203463] p-3 rounded-xl shadow-md">
           <div className="flex items-center justify-between text-slate-400 mb-1">
-            <span className="text-[11px] font-bold tracking-wider uppercase text-slate-300">Kontrak Pengadaan (Miliar)</span>
-            <Receipt className="w-4 h-4 text-blue-400" />
+            <span className="text-[10px] font-bold tracking-wider uppercase text-slate-300">KONTRAK (M)</span>
+            <Receipt className="w-3.5 h-3.5 text-blue-400" />
           </div>
-          <div className="flex items-baseline gap-1">
-            <span className="text-xl font-extrabold text-blue-400 font-mono tabular-nums">
+          <div className="flex items-baseline gap-0.5">
+            <span className="text-lg font-extrabold text-blue-400 font-mono tabular-nums">
               {formatMiliar(financialTotals.totalKontrak)}
             </span>
-            <span className="text-xs text-slate-400 font-semibold">M</span>
+            <span className="text-[10px] text-slate-400 font-semibold">M</span>
           </div>
-          <p className="text-[10px] text-slate-400 mt-1">
-            Nilai Perikatan Kontrak
-          </p>
+          <p className="text-[9px] text-slate-400 mt-0.5">Nilai Perikatan</p>
         </div>
 
-        <div className="bg-[#111e3f] border border-[#203463] p-3.5 rounded-xl shadow-md">
+        <div className="bg-[#111e3f] border border-[#203463] p-3 rounded-xl shadow-md">
           <div className="flex items-center justify-between text-slate-400 mb-1">
-            <span className="text-[11px] font-bold tracking-wider uppercase text-slate-300">Total Rilis (Miliar)</span>
-            <TrendingUp className="w-4 h-4 text-indigo-400" />
+            <span className="text-[10px] font-bold tracking-wider uppercase text-slate-300">RILIS (M)</span>
+            <TrendingUp className="w-3.5 h-3.5 text-indigo-400" />
           </div>
-          <div className="flex items-baseline gap-1">
-            <span className="text-xl font-extrabold text-indigo-300 font-mono tabular-nums">
+          <div className="flex items-baseline gap-0.5">
+            <span className="text-lg font-extrabold text-indigo-300 font-mono tabular-nums">
               {formatMiliar(financialTotals.totalRilis)}
             </span>
-            <span className="text-xs text-slate-400 font-semibold">M</span>
+            <span className="text-[10px] text-slate-400 font-semibold">M</span>
           </div>
-          <p className="text-[10px] text-slate-400 mt-1">
-            Otorisasi Rilis Anggaran
-          </p>
+          <p className="text-[9px] text-slate-400 mt-0.5">Otorisasi Rilis</p>
         </div>
 
-        <div className="bg-[#111e3f] border border-[#203463] p-3.5 rounded-xl shadow-md">
-          <div className="flex items-center justify-between text-slate-400 mb-1">
-            <span className="text-[11px] font-bold tracking-wider uppercase text-emerald-400">Realisasi Aktual (Miliar)</span>
-            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+        {/* Accrual Card */}
+        <div className="bg-[#111e3f] border border-blue-500/30 p-3 rounded-xl shadow-md bg-gradient-to-b from-[#111e3f] to-[#0c1833]">
+          <div className="flex items-center justify-between text-blue-400 mb-1">
+            <span className="text-[10px] font-bold tracking-wider uppercase text-blue-300">ACCRUAL (M)</span>
+            <span className="w-2 h-2 rounded-full bg-blue-400" />
           </div>
-          <div className="flex items-baseline gap-1">
-            <span className="text-xl font-extrabold text-emerald-400 font-mono tabular-nums">
+          <div className="flex items-baseline gap-0.5">
+            <span className="text-lg font-extrabold text-blue-300 font-mono tabular-nums">
+              {formatMiliar(financialTotals.totalAccrue)}
+            </span>
+            <span className="text-[10px] text-blue-400 font-semibold">M</span>
+          </div>
+          <p className="text-[9px] text-slate-400 mt-0.5">Beban Akrual</p>
+        </div>
+
+        {/* NPP Sudah OGP Card */}
+        <div className="bg-[#111e3f] border border-emerald-500/30 p-3 rounded-xl shadow-md bg-gradient-to-b from-[#111e3f] to-[#0c1833]">
+          <div className="flex items-center justify-between text-emerald-400 mb-1">
+            <span className="text-[10px] font-bold tracking-wider uppercase text-emerald-300">SUDAH OGP (M)</span>
+            <span className="w-2 h-2 rounded-full bg-emerald-400" />
+          </div>
+          <div className="flex items-baseline gap-0.5">
+            <span className="text-lg font-extrabold text-emerald-300 font-mono tabular-nums">
+              {formatMiliar(financialTotals.totalNppSudahOgp)}
+            </span>
+            <span className="text-[10px] text-emerald-400 font-semibold">M</span>
+          </div>
+          <p className="text-[9px] text-slate-400 mt-0.5">NPP Terbit OGP</p>
+        </div>
+
+        {/* NPP Belum OGP Card */}
+        <div className="bg-[#111e3f] border border-amber-500/30 p-3 rounded-xl shadow-md bg-gradient-to-b from-[#111e3f] to-[#0c1833]">
+          <div className="flex items-center justify-between text-amber-400 mb-1">
+            <span className="text-[10px] font-bold tracking-wider uppercase text-amber-300">BELUM OGP (M)</span>
+            <span className="w-2 h-2 rounded-full bg-amber-400" />
+          </div>
+          <div className="flex items-baseline gap-0.5">
+            <span className="text-lg font-extrabold text-amber-300 font-mono tabular-nums">
+              {formatMiliar(financialTotals.totalNppBelumOgp)}
+            </span>
+            <span className="text-[10px] text-amber-400 font-semibold">M</span>
+          </div>
+          <p className="text-[9px] text-slate-400 mt-0.5">NPP Antrean OGP</p>
+        </div>
+
+        {/* Total Aktual Card */}
+        <div className="bg-[#111e3f] border border-emerald-500/40 p-3 rounded-xl shadow-md bg-gradient-to-b from-[#111e3f] to-[#0a1e28]">
+          <div className="flex items-center justify-between text-emerald-400 mb-1">
+            <span className="text-[10px] font-bold tracking-wider uppercase text-emerald-300">TOTAL AKTUAL (M)</span>
+            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+          </div>
+          <div className="flex items-baseline gap-0.5">
+            <span className="text-lg font-extrabold text-emerald-400 font-mono tabular-nums">
               {formatMiliar(financialTotals.totalAktual)}
             </span>
-            <span className="text-xs text-slate-400 font-semibold">M</span>
+            <span className="text-[10px] text-emerald-400 font-semibold">M</span>
           </div>
-          <div className="flex items-center gap-1.5 mt-1">
-            <span className="text-[10px] text-slate-400">Serapan:</span>
-            <span className="text-[10px] font-bold font-mono text-emerald-400">
-              {financialTotals.avgSerapan.toFixed(2)}%
-            </span>
-          </div>
+          <p className="text-[9px] text-emerald-400/90 font-mono font-bold mt-0.5">
+            Serapan: {financialTotals.avgSerapan.toFixed(1)}%
+          </p>
         </div>
 
-        <div className="bg-[#111e3f] border border-[#203463] p-3.5 rounded-xl shadow-md col-span-2 sm:col-span-1">
+        {/* Sisa Accrue Card */}
+        <div className="bg-[#111e3f] border border-[#203463] p-3 rounded-xl shadow-md">
           <div className="flex items-center justify-between text-slate-400 mb-1">
-            <span className="text-[11px] font-bold tracking-wider uppercase text-slate-300">Sisa Pembayaran (Miliar)</span>
-            <DollarSign className="w-4 h-4 text-orange-400" />
+            <span className="text-[10px] font-bold tracking-wider uppercase text-slate-300">SISA ACCRUE (M)</span>
+            <DollarSign className="w-3.5 h-3.5 text-purple-400" />
           </div>
-          <div className="flex items-baseline gap-1">
-            <span className={`text-xl font-extrabold font-mono tabular-nums ${
-              financialTotals.totalSisaPembayaran < 0 ? 'text-rose-400' : 'text-orange-400'
-            }`}>
-              {formatMiliar(financialTotals.totalSisaPembayaran)}
+          <div className="flex items-baseline gap-0.5">
+            <span className="text-lg font-extrabold text-purple-300 font-mono tabular-nums">
+              {formatMiliar(financialTotals.totalSisaAccrue)}
             </span>
-            <span className="text-xs text-slate-400 font-semibold">M</span>
+            <span className="text-[10px] text-slate-400 font-semibold">M</span>
           </div>
-          <p className="text-[10px] text-slate-400 mt-1">
-            Kontrak - Aktual
-          </p>
+          <p className="text-[9px] text-slate-400 mt-0.5">Accrue - OGP</p>
         </div>
       </div>
 
@@ -572,7 +618,7 @@ export const ProgramKerjaView: React.FC<ProgramKerjaViewProps> = ({
                   className="py-3 px-3 font-bold text-right cursor-pointer hover:text-white"
                 >
                   <div className="flex items-center justify-end gap-1">
-                    <span>RKAP (MILIAR)</span>
+                    <span>RKAP (M)</span>
                     <ArrowUpDown className="w-3 h-3 opacity-60" />
                   </div>
                 </th>
@@ -581,7 +627,7 @@ export const ProgramKerjaView: React.FC<ProgramKerjaViewProps> = ({
                   className="py-3 px-3 font-bold text-right cursor-pointer hover:text-white"
                 >
                   <div className="flex items-center justify-end gap-1">
-                    <span>KONTRAK PENGADAAN (MILIAR)</span>
+                    <span>KONTRAK (M)</span>
                     <ArrowUpDown className="w-3 h-3 opacity-60" />
                   </div>
                 </th>
@@ -590,7 +636,34 @@ export const ProgramKerjaView: React.FC<ProgramKerjaViewProps> = ({
                   className="py-3 px-3 font-bold text-right cursor-pointer hover:text-white"
                 >
                   <div className="flex items-center justify-end gap-1">
-                    <span>RILIS (MILIAR)</span>
+                    <span>RILIS (M)</span>
+                    <ArrowUpDown className="w-3 h-3 opacity-60" />
+                  </div>
+                </th>
+                <th
+                  onClick={() => handleSort('nilaiAccrue')}
+                  className="py-3 px-3 font-bold text-right cursor-pointer hover:text-white text-blue-300"
+                >
+                  <div className="flex items-center justify-end gap-1">
+                    <span>ACCRUAL (M)</span>
+                    <ArrowUpDown className="w-3 h-3 opacity-60" />
+                  </div>
+                </th>
+                <th
+                  onClick={() => handleSort('nilaiOgp')}
+                  className="py-3 px-3 font-bold text-right cursor-pointer hover:text-white text-emerald-300"
+                >
+                  <div className="flex items-center justify-end gap-1">
+                    <span>SUDAH OGP (M)</span>
+                    <ArrowUpDown className="w-3 h-3 opacity-60" />
+                  </div>
+                </th>
+                <th
+                  onClick={() => handleSort('belumOgp')}
+                  className="py-3 px-3 font-bold text-right cursor-pointer hover:text-white text-amber-300"
+                >
+                  <div className="flex items-center justify-end gap-1">
+                    <span>BELUM OGP (M)</span>
                     <ArrowUpDown className="w-3 h-3 opacity-60" />
                   </div>
                 </th>
@@ -599,12 +672,12 @@ export const ProgramKerjaView: React.FC<ProgramKerjaViewProps> = ({
                   className="py-3 px-3 font-bold text-right cursor-pointer hover:text-white"
                 >
                   <div className="flex items-center justify-end gap-1">
-                    <span>AKTUAL (MILIAR)</span>
+                    <span>TOTAL AKTUAL (M)</span>
                     <ArrowUpDown className="w-3 h-3 opacity-60" />
                   </div>
                 </th>
                 <th className="py-3 px-3 font-bold text-center">SERAPAN %</th>
-                <th className="py-3 px-3 font-bold text-right">SISA PEMBAYARAN (MILIAR)</th>
+                <th className="py-3 px-3 font-bold text-right text-purple-300">SISA ACCRUE (M)</th>
                 <th className="py-3 px-3 font-bold text-center">PROGRES</th>
                 <th className="py-3 px-3 font-bold text-center">STATUS</th>
                 <th className="py-3 px-3 font-bold text-center">AKSI</th>
@@ -613,14 +686,13 @@ export const ProgramKerjaView: React.FC<ProgramKerjaViewProps> = ({
             <tbody className="divide-y divide-[#1c2c54]/60">
               {paginatedList.length === 0 ? (
                 <tr>
-                  <td colSpan={14} className="py-10 text-center text-slate-400">
+                  <td colSpan={17} className="py-10 text-center text-slate-400">
                     Tidak ada program kerja yang cocok dengan filter pencarian.
                   </td>
                 </tr>
               ) : (
                 paginatedList.map((p, index) => {
                   const serapan = p.nilaiCapexRkap > 0 ? (p.nilaiAktual / p.nilaiCapexRkap) * 100 : 0;
-                  const sisaPembayaran = (p.nilaiKontrak || 0) - (p.nilaiAktual || 0);
                   const rowNumber = (currentPage - 1) * itemsPerPage + index + 1;
                   return (
                     <tr
@@ -660,10 +732,19 @@ export const ProgramKerjaView: React.FC<ProgramKerjaViewProps> = ({
                       <td className="py-3 px-3 text-right font-mono text-slate-300 tabular-nums whitespace-nowrap">
                         {formatMiliar(p.nilaiKontrak)}
                       </td>
-                      <td className="py-3 px-3 text-right font-mono text-slate-300 tabular-nums whitespace-nowrap">
+                      <td className="py-3 px-3 text-right font-mono text-indigo-300 tabular-nums whitespace-nowrap">
                         {formatMiliar(p.nilaiRilis)}
                       </td>
-                      <td className="py-3 px-3 text-right font-mono text-emerald-400 font-semibold tabular-nums whitespace-nowrap">
+                      <td className="py-3 px-3 text-right font-mono text-blue-300 font-semibold tabular-nums whitespace-nowrap bg-blue-500/5">
+                        {formatMiliar(p.nilaiAccrue)}
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono text-emerald-300 font-semibold tabular-nums whitespace-nowrap bg-emerald-500/5">
+                        {formatMiliar(p.nilaiOgp)}
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono text-amber-300 font-semibold tabular-nums whitespace-nowrap bg-amber-500/5">
+                        {formatMiliar(p.belumOgp)}
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono text-emerald-400 font-bold tabular-nums whitespace-nowrap">
                         {formatMiliar(p.nilaiAktual)}
                       </td>
                       <td className="py-3 px-3 text-center whitespace-nowrap">
@@ -679,18 +760,8 @@ export const ProgramKerjaView: React.FC<ProgramKerjaViewProps> = ({
                           {serapan.toFixed(2)}%
                         </span>
                       </td>
-                      <td className="py-3 px-3 text-right font-mono tabular-nums whitespace-nowrap">
-                        <span
-                          className={`font-semibold ${
-                            sisaPembayaran < 0
-                              ? 'text-rose-400 font-bold'
-                              : sisaPembayaran > 0
-                              ? 'text-amber-400'
-                              : 'text-slate-400'
-                          }`}
-                        >
-                          {formatMiliar(sisaPembayaran)}
-                        </span>
+                      <td className="py-3 px-3 text-right font-mono tabular-nums whitespace-nowrap text-purple-300 font-semibold">
+                        {formatMiliar(p.sisaAccrue)}
                       </td>
                       <td className="py-3 px-3 text-center whitespace-nowrap">
                         <div className="flex items-center justify-center gap-1.5">
@@ -930,48 +1001,70 @@ export const ProgramKerjaView: React.FC<ProgramKerjaViewProps> = ({
                 </div>
               </div>
 
-              {/* Proker Financial & Milestone Information */}
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
-                <div className="bg-[#0f1b35] p-3 rounded-xl border border-[#1e2f57]">
-                  <p className="text-slate-400">RKAP / CAPEX</p>
-                  <p className="text-base font-bold text-white font-mono mt-0.5">
-                    {formatMiliar(selectedProkerDetail.nilaiCapexRkap)} M
-                  </p>
-                  <p className="text-[10px] text-slate-400 mt-0.5">Plafon Anggaran</p>
+              {/* Proker Financial & Milestone Information - Separated Breakdown */}
+              <div className="space-y-2.5">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+                  <div className="bg-[#0f1b35] p-3 rounded-xl border border-[#1e2f57]">
+                    <p className="text-slate-400">Plafon RKAP / CAPEX</p>
+                    <p className="text-base font-bold text-white font-mono mt-0.5">
+                      {formatMiliar(selectedProkerDetail.nilaiCapexRkap)} M
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Anggaran Disetujui</p>
+                  </div>
+                  <div className="bg-[#0f1b35] p-3 rounded-xl border border-[#1e2f57]">
+                    <p className="text-slate-400">Kontrak Pengadaan</p>
+                    <p className="text-base font-bold text-blue-400 font-mono mt-0.5">
+                      {formatMiliar(selectedProkerDetail.nilaiKontrak)} M
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Perikatan Vendor</p>
+                  </div>
+                  <div className="bg-[#0f1b35] p-3 rounded-xl border border-[#1e2f57]">
+                    <p className="text-slate-400">Rilis Anggaran</p>
+                    <p className="text-base font-bold text-indigo-300 font-mono mt-0.5">
+                      {formatMiliar(selectedProkerDetail.nilaiRilis)} M
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Alokasi Rilis</p>
+                  </div>
                 </div>
-                <div className="bg-[#0f1b35] p-3 rounded-xl border border-[#1e2f57]">
-                  <p className="text-slate-400">Kontrak Pengadaan</p>
-                  <p className="text-base font-bold text-blue-400 font-mono mt-0.5">
-                    {formatMiliar(selectedProkerDetail.nilaiKontrak)} M
-                  </p>
-                  <p className="text-[10px] text-slate-400 mt-0.5">Perikatan Kontrak</p>
-                </div>
-                <div className="bg-[#0f1b35] p-3 rounded-xl border border-[#1e2f57]">
-                  <p className="text-slate-400">Rilis Anggaran</p>
-                  <p className="text-base font-bold text-indigo-300 font-mono mt-0.5">
-                    {formatMiliar(selectedProkerDetail.nilaiRilis)} M
-                  </p>
-                  <p className="text-[10px] text-slate-400 mt-0.5">Otorisasi Rilis</p>
-                </div>
-                <div className="bg-[#0f1b35] p-3 rounded-xl border border-[#1e2f57]">
-                  <p className="text-slate-400">Realisasi Aktual</p>
-                  <p className="text-base font-bold text-emerald-400 font-mono mt-0.5">
-                    {formatMiliar(selectedProkerDetail.nilaiAktual)} M
-                  </p>
-                  <p className="text-[10px] text-emerald-400/80 mt-0.5">
-                    Serapan: {selectedProkerDetail.nilaiCapexRkap > 0 ? ((selectedProkerDetail.nilaiAktual / selectedProkerDetail.nilaiCapexRkap) * 100).toFixed(1) : 0}%
-                  </p>
-                </div>
-                <div className="bg-[#0f1b35] p-3 rounded-xl border border-[#1e2f57] col-span-2 sm:col-span-1">
-                  <p className="text-slate-400">Sisa Pembayaran</p>
-                  <p className={`text-base font-bold font-mono mt-0.5 ${
-                    ((selectedProkerDetail.nilaiKontrak || 0) - (selectedProkerDetail.nilaiAktual || 0)) < 0
-                      ? 'text-rose-400'
-                      : 'text-amber-400'
-                  }`}>
-                    {formatMiliar((selectedProkerDetail.nilaiKontrak || 0) - (selectedProkerDetail.nilaiAktual || 0))} M
-                  </p>
-                  <p className="text-[10px] text-slate-400 mt-0.5">Kontrak - Aktual</p>
+
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 text-xs">
+                  <div className="bg-[#0f1b35] p-2.5 rounded-xl border border-blue-500/30">
+                    <p className="text-blue-300 font-semibold text-[11px]">Accrual (Akrual)</p>
+                    <p className="text-base font-bold text-blue-300 font-mono mt-0.5">
+                      {formatMiliar(selectedProkerDetail.nilaiAccrue)} M
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Beban Akrual</p>
+                  </div>
+                  <div className="bg-[#0f1b35] p-2.5 rounded-xl border border-emerald-500/30">
+                    <p className="text-emerald-300 font-semibold text-[11px]">NPP Sudah OGP</p>
+                    <p className="text-base font-bold text-emerald-300 font-mono mt-0.5">
+                      {formatMiliar(selectedProkerDetail.nilaiOgp)} M
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Siap Bayar / Cair</p>
+                  </div>
+                  <div className="bg-[#0f1b35] p-2.5 rounded-xl border border-amber-500/30">
+                    <p className="text-amber-300 font-semibold text-[11px]">NPP Belum OGP</p>
+                    <p className="text-base font-bold text-amber-300 font-mono mt-0.5">
+                      {formatMiliar(selectedProkerDetail.belumOgp)} M
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Menunggu OGP</p>
+                  </div>
+                  <div className="bg-[#0f1b35] p-2.5 rounded-xl border border-emerald-500/50 bg-emerald-950/20">
+                    <p className="text-emerald-300 font-semibold text-[11px]">Total Realisasi Aktual</p>
+                    <p className="text-base font-bold text-emerald-400 font-mono mt-0.5">
+                      {formatMiliar(selectedProkerDetail.nilaiAktual)} M
+                    </p>
+                    <p className="text-[10px] text-emerald-400/90 font-mono mt-0.5">
+                      Serapan: {selectedProkerDetail.nilaiCapexRkap > 0 ? ((selectedProkerDetail.nilaiAktual / selectedProkerDetail.nilaiCapexRkap) * 100).toFixed(1) : 0}%
+                    </p>
+                  </div>
+                  <div className="bg-[#0f1b35] p-2.5 rounded-xl border border-purple-500/30">
+                    <p className="text-purple-300 font-semibold text-[11px]">Sisa Accrue</p>
+                    <p className="text-base font-bold text-purple-300 font-mono mt-0.5">
+                      {formatMiliar(selectedProkerDetail.sisaAccrue)} M
+                    </p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Accrue - OGP</p>
+                  </div>
                 </div>
               </div>
 

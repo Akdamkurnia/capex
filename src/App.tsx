@@ -58,6 +58,14 @@ export default function App() {
   const [previewDoc, setPreviewDoc] = useState<InvestmentDocument | null>(null);
   const [loading, setLoading] = useState(true);
 
+  // Intent to open upload modal with pre-selected proker and type
+  const [uploadIntent, setUploadIntent] = useState<{
+    open: boolean;
+    prokerId?: string;
+    forcedType?: DocumentType | null;
+    tahun?: number;
+  } | null>(null);
+
   // Fetch all data
   const fetchData = useCallback(async () => {
     try {
@@ -72,7 +80,8 @@ export default function App() {
         logsData,
         yearsData,
         multiYearData,
-        usersData
+        usersData,
+        progressData
       ] = await Promise.all([
         api.getDashboardStats({ tahun: selectedYear, owner: dashboardOwner, bosie: dashboardBosie }),
         api.getWorkPrograms(),
@@ -83,7 +92,8 @@ export default function App() {
         api.getAuditLogs(),
         api.getAvailableYears(),
         api.getMultiYearSummary(),
-        api.getUsers()
+        api.getUsers(),
+        api.getProgressRecords()
       ]);
 
       setStats(statsData);
@@ -93,6 +103,7 @@ export default function App() {
       setFinancialAnalyses(faData);
       setNotifications(notifsData);
       setAuditLogs(logsData);
+      setProgressRecords(progressData || []);
       if (yearsData && yearsData.length > 0) {
         setAvailableYears(yearsData);
       }
@@ -104,12 +115,6 @@ export default function App() {
         // keep currentUser in sync if updated
         const syncCurrent = usersData.find(u => u.id === currentUser.id);
         if (syncCurrent) setCurrentUser(syncCurrent);
-      }
-
-      // Also fetch progress for first proker if available
-      if (prokerData.length > 0) {
-        const prgData = await api.getProgressRecords(prokerData[0].id);
-        setProgressRecords(prgData);
       }
     } catch (err) {
       console.error('Error fetching data from server:', err);
@@ -177,8 +182,28 @@ export default function App() {
     fetchData();
   };
 
+  const handleUpdateProgress = async (id: string, data: Partial<PhysicalProgressRecord>) => {
+    await api.updateProgress(id, data, currentUser);
+    fetchData();
+  };
+
+  const handleDeleteProgress = async (id: string) => {
+    await api.deleteProgress(id, currentUser);
+    fetchData();
+  };
+
   const handleCreateRealization = async (data: Partial<BudgetRealizationRelease>) => {
     await api.createRealization(data, currentUser);
+    fetchData();
+  };
+
+  const handleUpdateRealization = async (id: string, data: Partial<BudgetRealizationRelease>) => {
+    await api.updateRealization(id, data, currentUser);
+    fetchData();
+  };
+
+  const handleDeleteRealization = async (id: string) => {
+    await api.deleteRealization(id, currentUser);
     fetchData();
   };
 
@@ -339,16 +364,19 @@ export default function App() {
                   onDeleteProker={handleDeleteProker}
                   onAssignPic={handleAssignPic}
                   onOpenUploadModal={(p, defaultJenis) => {
-                    if (defaultJenis) {
-                      if (defaultJenis === 'PKS') setCurrentTab('pks');
-                      else if (defaultJenis === 'SPK') setCurrentTab('spk');
-                      else if (defaultJenis === 'Invoice') setCurrentTab('invoice');
-                      else if (defaultJenis === 'BAPP') setCurrentTab('bapp');
-                      else if (defaultJenis === 'FS-BC') setCurrentTab('fs-bc-docs');
-                      else setCurrentTab('dokumen');
-                    } else {
-                      setCurrentTab('dokumen');
-                    }
+                    const docType = (defaultJenis as DocumentType) || 'PKS';
+                    setUploadIntent({
+                      open: true,
+                      prokerId: p.id,
+                      forcedType: docType,
+                      tahun: p.tahunAnggaran
+                    });
+                    if (docType === 'PKS') setCurrentTab('pks');
+                    else if (docType === 'SPK') setCurrentTab('spk');
+                    else if (docType === 'Invoice') setCurrentTab('invoice');
+                    else if (docType === 'BAPP') setCurrentTab('bapp');
+                    else if (docType === 'FS-BC') setCurrentTab('fs-bc-docs');
+                    else setCurrentTab('dokumen');
                   }}
                   onViewDocument={(docId) => {
                     const found = documents.find(d => d.id === docId);
@@ -362,8 +390,14 @@ export default function App() {
                   workPrograms={workPrograms}
                   progressRecords={progressRecords}
                   currentUser={currentUser}
+                  availableYears={availableYears}
+                  selectedYear={selectedYear}
+                  onYearChange={setSelectedYear}
+                  onOpenAddYearModal={() => setIsAddYearModalOpen(true)}
                   onRefresh={fetchData}
                   onLogProgress={handleLogProgress}
+                  onUpdateProgress={handleUpdateProgress}
+                  onDeleteProgress={handleDeleteProgress}
                 />
               )}
 
@@ -378,6 +412,8 @@ export default function App() {
                   onOpenAddYearModal={() => setIsAddYearModalOpen(true)}
                   onRefresh={fetchData}
                   onCreateRealization={handleCreateRealization}
+                  onUpdateRealization={handleUpdateRealization}
+                  onDeleteRealization={handleDeleteRealization}
                 />
               )}
 
@@ -385,9 +421,20 @@ export default function App() {
                 <AnalisaFinansialView
                   analyses={financialAnalyses}
                   workPrograms={workPrograms}
+                  documents={documents}
                   currentUser={currentUser}
                   onRefresh={fetchData}
                   onSaveAnalysis={handleSaveFinancialAnalysis}
+                  onOpenUploadDocument={(p, docType) => {
+                    setUploadIntent({
+                      open: true,
+                      prokerId: p.id,
+                      forcedType: docType,
+                      tahun: p.tahunAnggaran
+                    });
+                    if (docType === 'FS-BC') setCurrentTab('fs-bc-docs');
+                    else setCurrentTab('dokumen');
+                  }}
                   onViewDocument={(docId) => {
                     const found = documents.find(d => d.id === docId);
                     if (found) setPreviewDoc(found);
@@ -405,6 +452,10 @@ export default function App() {
                   selectedYear={selectedYear}
                   onOpenAddYearModal={() => setIsAddYearModalOpen(true)}
                   forcedType={null}
+                  initialProkerId={uploadIntent?.prokerId}
+                  initialDocType={uploadIntent?.forcedType}
+                  initialOpenUpload={uploadIntent?.open}
+                  onClearUploadIntent={() => setUploadIntent(null)}
                   onRefresh={fetchData}
                   onUploadDocument={handleUploadDocument}
                   onUpdateDocument={handleUpdateDocument}
@@ -423,6 +474,10 @@ export default function App() {
                   selectedYear={selectedYear}
                   onOpenAddYearModal={() => setIsAddYearModalOpen(true)}
                   forcedType="PKS"
+                  initialProkerId={uploadIntent?.prokerId}
+                  initialDocType={uploadIntent?.forcedType || 'PKS'}
+                  initialOpenUpload={uploadIntent?.open}
+                  onClearUploadIntent={() => setUploadIntent(null)}
                   onRefresh={fetchData}
                   onUploadDocument={handleUploadDocument}
                   onUpdateDocument={handleUpdateDocument}
@@ -441,6 +496,10 @@ export default function App() {
                   selectedYear={selectedYear}
                   onOpenAddYearModal={() => setIsAddYearModalOpen(true)}
                   forcedType="SPK"
+                  initialProkerId={uploadIntent?.prokerId}
+                  initialDocType={uploadIntent?.forcedType || 'SPK'}
+                  initialOpenUpload={uploadIntent?.open}
+                  onClearUploadIntent={() => setUploadIntent(null)}
                   onRefresh={fetchData}
                   onUploadDocument={handleUploadDocument}
                   onUpdateDocument={handleUpdateDocument}
@@ -459,6 +518,10 @@ export default function App() {
                   selectedYear={selectedYear}
                   onOpenAddYearModal={() => setIsAddYearModalOpen(true)}
                   forcedType="Invoice"
+                  initialProkerId={uploadIntent?.prokerId}
+                  initialDocType={uploadIntent?.forcedType || 'Invoice'}
+                  initialOpenUpload={uploadIntent?.open}
+                  onClearUploadIntent={() => setUploadIntent(null)}
                   onRefresh={fetchData}
                   onUploadDocument={handleUploadDocument}
                   onUpdateDocument={handleUpdateDocument}
@@ -477,6 +540,10 @@ export default function App() {
                   selectedYear={selectedYear}
                   onOpenAddYearModal={() => setIsAddYearModalOpen(true)}
                   forcedType="BAPP"
+                  initialProkerId={uploadIntent?.prokerId}
+                  initialDocType={uploadIntent?.forcedType || 'BAPP'}
+                  initialOpenUpload={uploadIntent?.open}
+                  onClearUploadIntent={() => setUploadIntent(null)}
                   onRefresh={fetchData}
                   onUploadDocument={handleUploadDocument}
                   onUpdateDocument={handleUpdateDocument}
@@ -495,6 +562,10 @@ export default function App() {
                   selectedYear={selectedYear}
                   onOpenAddYearModal={() => setIsAddYearModalOpen(true)}
                   forcedType="FS-BC"
+                  initialProkerId={uploadIntent?.prokerId}
+                  initialDocType={uploadIntent?.forcedType || 'FS-BC'}
+                  initialOpenUpload={uploadIntent?.open}
+                  onClearUploadIntent={() => setUploadIntent(null)}
                   onRefresh={fetchData}
                   onUploadDocument={handleUploadDocument}
                   onUpdateDocument={handleUpdateDocument}

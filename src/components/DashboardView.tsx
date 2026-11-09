@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   FolderKanban,
   TrendingUp,
@@ -114,6 +114,38 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const delayedProkers = workPrograms
     .filter(p => p.statusJadwal === 'Terlambat' || p.progresFisik < p.targetProgresFisik - 5)
     .slice(0, 5);
+
+  // Pemisahan Realisasi Aktual CAPEX: Accrual vs NPP Sudah di OGP vs NPP Belum di OGP
+  const financialBreakdown = useMemo(() => {
+    let accrual = 0;
+    let nppSudahOgp = 0;
+    let nppBelumOgp = 0;
+    let totalAktual = 0;
+    let sisaAccrue = 0;
+
+    workPrograms.forEach((p) => {
+      accrual += p.nilaiAccrue || 0;
+      nppSudahOgp += p.nilaiOgp || 0;
+      nppBelumOgp += p.belumOgp || 0;
+      totalAktual += p.nilaiAktual || 0;
+      sisaAccrue += p.sisaAccrue || 0;
+    });
+
+    const accrualPct = totalAktual > 0 ? (accrual / totalAktual) * 100 : 0;
+    const sudahOgpPct = totalAktual > 0 ? (nppSudahOgp / totalAktual) * 100 : 0;
+    const belumOgpPct = totalAktual > 0 ? (nppBelumOgp / totalAktual) * 100 : 0;
+
+    return {
+      accrual,
+      nppSudahOgp,
+      nppBelumOgp,
+      totalAktual,
+      sisaAccrue,
+      accrualPct,
+      sudahOgpPct,
+      belumOgpPct
+    };
+  }, [workPrograms]);
 
   return (
     <div className="space-y-6">
@@ -436,6 +468,132 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
           <div className="w-12 h-12 rounded-xl bg-white/20 flex items-center justify-center text-white shrink-0">
             <AlertTriangle className="w-6 h-6" />
+          </div>
+        </div>
+      </div>
+
+      {/* Row 1.2: Pemisahan Realisasi Aktual CAPEX (Accrual vs NPP Sudah OGP vs NPP Belum OGP) */}
+      <div className="bg-[#111e3f] border border-[#203463] rounded-2xl p-4 shadow-lg space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#1c2c54] pb-2.5">
+          <div className="flex items-center gap-2">
+            <span className="p-1.5 rounded-lg bg-orange-500/10 text-orange-400 border border-orange-500/20">
+              <Coins className="w-4 h-4" />
+            </span>
+            <div>
+              <h4 className="text-xs font-bold text-white tracking-tight flex items-center gap-2">
+                <span>Pemisahan Realisasi Aktual CAPEX PT Pos Indonesia</span>
+                <span className="text-[10px] px-2 py-0.2 rounded-full bg-blue-500/20 text-blue-300 font-mono">
+                  {selectedYear === 'Semua' ? 'Seluruh Tahun' : `Tahun ${selectedYear}`}
+                </span>
+              </h4>
+              <p className="text-[10px] text-slate-400 mt-0.5">
+                Rincian akuntansi: Beban Akrual (Accrue) vs NPP yang telah diterbitkan OGP vs NPP dalam antrean OGP
+              </p>
+            </div>
+          </div>
+          <div className="text-right">
+            <span className="text-xs font-bold text-emerald-400 font-mono">
+              Total: {formatRupiah(financialBreakdown.totalAktual)} Miliar
+            </span>
+          </div>
+        </div>
+
+        {/* 3 Metric Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+          <div className="bg-[#0b162e] border border-blue-500/30 rounded-xl p-3">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] font-bold text-blue-300 uppercase flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-blue-400" />
+                <span>Accrual (Accrue)</span>
+              </span>
+              <span className="text-[10px] text-blue-400 font-mono font-bold">
+                {financialBreakdown.accrualPct.toFixed(1)}%
+              </span>
+            </div>
+            <div className="text-lg font-extrabold text-blue-300 font-mono tabular-nums">
+              {financialBreakdown.accrual.toFixed(3)} <span className="text-xs font-semibold">M</span>
+            </div>
+            <p className="text-[10px] text-slate-400 mt-0.5">Pencatatan beban akrual proyek</p>
+          </div>
+
+          <div className="bg-[#0b162e] border border-emerald-500/30 rounded-xl p-3">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] font-bold text-emerald-300 uppercase flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                <span>NPP Sudah di OGP</span>
+              </span>
+              <span className="text-[10px] text-emerald-400 font-mono font-bold">
+                {financialBreakdown.sudahOgpPct.toFixed(1)}%
+              </span>
+            </div>
+            <div className="text-lg font-extrabold text-emerald-400 font-mono tabular-nums">
+              {financialBreakdown.nppSudahOgp.toFixed(3)} <span className="text-xs font-semibold">M</span>
+            </div>
+            <p className="text-[10px] text-slate-400 mt-0.5">Sudah terbit OGP (siap bayar/cair)</p>
+          </div>
+
+          <div className="bg-[#0b162e] border border-amber-500/30 rounded-xl p-3">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] font-bold text-amber-300 uppercase flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-amber-400" />
+                <span>NPP Belum di OGP</span>
+              </span>
+              <span className="text-[10px] text-amber-400 font-mono font-bold">
+                {financialBreakdown.belumOgpPct.toFixed(1)}%
+              </span>
+            </div>
+            <div className="text-lg font-extrabold text-amber-400 font-mono tabular-nums">
+              {financialBreakdown.nppBelumOgp.toFixed(3)} <span className="text-xs font-semibold">M</span>
+            </div>
+            <p className="text-[10px] text-slate-400 mt-0.5">Menunggu penerbitan OGP</p>
+          </div>
+
+          <div className="bg-[#0b162e] border border-purple-500/30 rounded-xl p-3">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] font-bold text-purple-300 uppercase flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-purple-400" />
+                <span>Sisa Accrue</span>
+              </span>
+            </div>
+            <div className="text-lg font-extrabold text-purple-300 font-mono tabular-nums">
+              {financialBreakdown.sisaAccrue.toFixed(3)} <span className="text-xs font-semibold">M</span>
+            </div>
+            <p className="text-[10px] text-slate-400 mt-0.5">Accrue - Sudah OGP</p>
+          </div>
+        </div>
+
+        {/* Proportional Stacked Progress Bar */}
+        <div className="space-y-1">
+          <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden flex">
+            <div
+              style={{ width: `${Math.min(financialBreakdown.accrualPct, 100)}%` }}
+              className="h-full bg-blue-500 transition-all duration-300"
+              title={`Accrual: ${financialBreakdown.accrual.toFixed(2)} M (${financialBreakdown.accrualPct.toFixed(1)}%)`}
+            />
+            <div
+              style={{ width: `${Math.min(financialBreakdown.sudahOgpPct, 100)}%` }}
+              className="h-full bg-emerald-500 transition-all duration-300"
+              title={`NPP Sudah OGP: ${financialBreakdown.nppSudahOgp.toFixed(2)} M (${financialBreakdown.sudahOgpPct.toFixed(1)}%)`}
+            />
+            <div
+              style={{ width: `${Math.min(financialBreakdown.belumOgpPct, 100)}%` }}
+              className="h-full bg-amber-500 transition-all duration-300"
+              title={`NPP Belum OGP: ${financialBreakdown.nppBelumOgp.toFixed(2)} M (${financialBreakdown.belumOgpPct.toFixed(1)}%)`}
+            />
+          </div>
+          <div className="flex items-center justify-between text-[10px] text-slate-400">
+            <span className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+              <span>Accrual</span>
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              <span>NPP Sudah di OGP</span>
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+              <span>NPP Belum di OGP</span>
+            </span>
           </div>
         </div>
       </div>

@@ -22,7 +22,10 @@ import {
   History,
   Calendar,
   Building,
-  Layers
+  Layers,
+  Sparkles,
+  FileUp,
+  Check
 } from 'lucide-react';
 import { InvestmentDocument, WorkProgram, User, DocumentType, VerificationStatus } from '../types';
 import { formatDateIndo, formatFileSize, formatRupiah } from '../utils/formatters';
@@ -35,6 +38,10 @@ interface DocumentsViewProps {
   selectedYear?: string;
   onOpenAddYearModal?: () => void;
   forcedType?: DocumentType | null;
+  initialProkerId?: string;
+  initialDocType?: DocumentType | null;
+  initialOpenUpload?: boolean;
+  onClearUploadIntent?: () => void;
   onRefresh: () => void;
   onUploadDocument: (formData: FormData) => Promise<void>;
   onUpdateDocument: (id: string, data: Partial<InvestmentDocument>) => Promise<void>;
@@ -51,6 +58,10 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
   selectedYear,
   onOpenAddYearModal,
   forcedType = null,
+  initialProkerId,
+  initialDocType,
+  initialOpenUpload,
+  onClearUploadIntent,
   onRefresh,
   onUploadDocument,
   onUpdateDocument,
@@ -63,6 +74,9 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
   const [filterType, setFilterType] = useState<string>(forcedType || 'Semua');
   const [filterStatus, setFilterStatus] = useState<string>('Semua');
   const [filterProker, setFilterProker] = useState<string>('Semua');
+
+  // Success Notification Toast
+  const [successToast, setSuccessToast] = useState<string | null>(null);
 
   // Sync filterTahun if selectedYear prop changes
   useEffect(() => {
@@ -101,10 +115,61 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
   const [uploadTanggal, setUploadTanggal] = useState(new Date().toISOString().substring(0, 10));
   const [uploadCatatan, setUploadCatatan] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
 
-  // Prokers filtered by chosen uploadTahun
+  // Auto-generate realistic document number helper
+  const generateNomorDokumen = (jenis: DocumentType, yr: number, pid: string) => {
+    const p = prokerMap.get(pid);
+    const unit = p ? p.ownerCategory.toUpperCase() : 'DIR-POS';
+    const rand = Math.floor(100 + Math.random() * 900);
+    return `${jenis}.${rand}/${unit}/${yr}`;
+  };
+
+  const handleQuickGenerateNomor = () => {
+    setUploadNomor(generateNomorDokumen(uploadJenis, uploadTahun, uploadProkerId));
+  };
+
+  // Open upload modal with optional preset proker & type
+  const handleOpenUpload = (targetProkerId?: string, defaultType?: DocumentType, yrOverride?: number) => {
+    setReplaceTargetDoc(null);
+    setUploadFile(null);
+
+    const targetProker = targetProkerId ? prokerMap.get(targetProkerId) : null;
+    const initialYr = yrOverride || (targetProker ? targetProker.tahunAnggaran : (filterTahun !== 'Semua' ? parseInt(filterTahun) : (availableYears[availableYears.length - 1] || 2026)));
+
+    setUploadTahun(initialYr);
+
+    // Resolve proker for that year
+    const matching = workPrograms.filter((p) => p.tahunAnggaran === initialYr);
+    const resolvedPid = targetProkerId || matching[0]?.id || workPrograms[0]?.id || '';
+    setUploadProkerId(resolvedPid);
+
+    const chosenJenis = defaultType || forcedType || 'PKS';
+    setUploadJenis(chosenJenis);
+
+    // Pre-generate number & vendor
+    setUploadNomor(generateNomorDokumen(chosenJenis, initialYr, resolvedPid));
+    setUploadNama('');
+    setUploadVendor(targetProker?.ownerPic || '');
+    setUploadNilai('');
+    setUploadTanggal(new Date().toISOString().substring(0, 10));
+    setUploadCatatan('');
+    setShowUploadModal(true);
+  };
+
+  // Handle Intent when coming from another view (e.g. Program Kerja click Upload PKS / SPK / Invoice / BAPP / FS-BC)
+  useEffect(() => {
+    if (initialOpenUpload) {
+      handleOpenUpload(initialProkerId, initialDocType || forcedType || 'PKS');
+      if (onClearUploadIntent) onClearUploadIntent();
+    }
+  }, [initialOpenUpload, initialProkerId, initialDocType]);
+
+  // Prokers available for upload: fallback to all prokers if specific year has none yet
   const uploadProkers = useMemo(() => {
-    return workPrograms.filter((p) => p.tahunAnggaran === uploadTahun);
+    const matching = workPrograms.filter((p) => p.tahunAnggaran === uploadTahun);
+    return matching.length > 0 ? matching : workPrograms;
   }, [workPrograms, uploadTahun]);
 
   // Auto-select valid proker when uploadProkers change
@@ -120,6 +185,117 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
   const [editNama, setEditNama] = useState('');
   const [editVendor, setEditVendor] = useState('');
   const [editNilai, setEditNilai] = useState<number | ''>('');
+
+  const handleOpenReplaceVersion = (doc: InvestmentDocument) => {
+    setReplaceTargetDoc(doc);
+    setUploadFile(null);
+    const docYr = doc.tahunAnggaran || prokerMap.get(doc.prokerId)?.tahunAnggaran || 2026;
+    setUploadTahun(docYr);
+    setUploadProkerId(doc.prokerId);
+    setUploadJenis(doc.jenisDokumen);
+    setUploadNomor(doc.nomorDokumen);
+    setUploadNama(doc.namaDokumen);
+    setUploadVendor(doc.namaVendor || '');
+    setUploadNilai(doc.nilaiDokumen || '');
+    setUploadTanggal(new Date().toISOString().substring(0, 10));
+    setUploadCatatan('');
+    setShowUploadModal(true);
+  };
+
+  const handleOpenEditMetadata = (doc: InvestmentDocument) => {
+    setEditTargetDoc(doc);
+    setEditTahun(doc.tahunAnggaran || prokerMap.get(doc.prokerId)?.tahunAnggaran || 2026);
+    setEditNomor(doc.nomorDokumen);
+    setEditNama(doc.namaDokumen);
+    setEditVendor(doc.namaVendor || '');
+    setEditNilai(doc.nilaiDokumen || '');
+  };
+
+  // Drag and Drop handlers
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      const file = e.dataTransfer.files[0];
+      setUploadFile(file);
+      if (!uploadNama) {
+        setUploadNama(file.name.replace(/\.[^/.]+$/, ''));
+      }
+    }
+  };
+
+  const handleSubmitUpload = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!uploadFile) {
+      alert('Pilih file berkas dokumen terlebih dahulu');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', uploadFile);
+      formData.append('prokerId', uploadProkerId || workPrograms[0]?.id || 'PRK-001');
+      formData.append('tahunAnggaran', uploadTahun.toString());
+      formData.append('jenisDokumen', uploadJenis);
+      
+      const finalNomor = uploadNomor.trim() || generateNomorDokumen(uploadJenis, uploadTahun, uploadProkerId);
+      formData.append('nomorDokumen', finalNomor);
+      formData.append('namaDokumen', uploadNama.trim() || uploadFile.name);
+      formData.append('namaVendor', uploadVendor.trim());
+      if (uploadNilai !== '') formData.append('nilaiDokumen', uploadNilai.toString());
+      formData.append('tanggalDokumen', uploadTanggal);
+      formData.append('catatan', uploadCatatan.trim());
+      formData.append('picPengunggah', currentUser.name);
+      formData.append('userId', currentUser.id);
+      formData.append('userName', currentUser.name);
+      formData.append('userRole', currentUser.role);
+
+      if (replaceTargetDoc) {
+        formData.append('replaceDocId', replaceTargetDoc.id);
+      }
+
+      await onUploadDocument(formData);
+      setShowUploadModal(false);
+      
+      const successMsg = replaceTargetDoc
+        ? `Versi baru dokumen ${finalNomor} (${uploadJenis}) berhasil disimpan!`
+        : `Dokumen ${uploadJenis} (${finalNomor}) berhasil diunggah dengan lancar!`;
+      setSuccessToast(successMsg);
+      setTimeout(() => setSuccessToast(null), 4500);
+
+      onRefresh();
+    } catch (err: any) {
+      alert('Error mengunggah dokumen: ' + err.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSaveMetadata = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editTargetDoc) return;
+
+    await onUpdateDocument(editTargetDoc.id, {
+      nomorDokumen: editNomor,
+      namaDokumen: editNama,
+      namaVendor: editVendor,
+      tahunAnggaran: editTahun,
+      nilaiDokumen: editNilai !== '' ? Number(editNilai) : undefined
+    });
+    setEditTargetDoc(null);
+    onRefresh();
+  };
 
   const filteredDocs = useMemo(() => {
     return documents.filter((d) => {
@@ -149,98 +325,21 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
     return { total, verified, pending, needRevision, totalNilai };
   }, [filteredDocs]);
 
-  const handleOpenUpload = (targetProkerId?: string, defaultType?: DocumentType) => {
-    setReplaceTargetDoc(null);
-    setUploadFile(null);
-    const initialYr = filterTahun !== 'Semua' ? parseInt(filterTahun) : (availableYears[availableYears.length - 1] || 2026);
-    setUploadTahun(initialYr);
-    const matchingProkers = workPrograms.filter((p) => p.tahunAnggaran === initialYr);
-    setUploadProkerId(targetProkerId || matchingProkers[0]?.id || workPrograms[0]?.id || '');
-    setUploadJenis(defaultType || forcedType || 'PKS');
-    setUploadNomor('');
-    setUploadNama('');
-    setUploadVendor('');
-    setUploadNilai('');
-    setUploadTanggal(new Date().toISOString().substring(0, 10));
-    setUploadCatatan('');
-    setShowUploadModal(true);
-  };
-
-  const handleOpenReplaceVersion = (doc: InvestmentDocument) => {
-    setReplaceTargetDoc(doc);
-    setUploadFile(null);
-    const docYr = doc.tahunAnggaran || prokerMap.get(doc.prokerId)?.tahunAnggaran || 2026;
-    setUploadTahun(docYr);
-    setUploadProkerId(doc.prokerId);
-    setUploadJenis(doc.jenisDokumen);
-    setUploadNomor(doc.nomorDokumen);
-    setUploadNama(doc.namaDokumen);
-    setUploadVendor(doc.namaVendor || '');
-    setUploadNilai(doc.nilaiDokumen || '');
-    setUploadTanggal(new Date().toISOString().substring(0, 10));
-    setUploadCatatan('');
-    setShowUploadModal(true);
-  };
-
-  const handleOpenEditMetadata = (doc: InvestmentDocument) => {
-    setEditTargetDoc(doc);
-    setEditTahun(doc.tahunAnggaran || prokerMap.get(doc.prokerId)?.tahunAnggaran || 2026);
-    setEditNomor(doc.nomorDokumen);
-    setEditNama(doc.namaDokumen);
-    setEditVendor(doc.namaVendor || '');
-    setEditNilai(doc.nilaiDokumen || '');
-  };
-
-  const handleSubmitUpload = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!uploadFile) return;
-
-    setIsSubmitting(true);
-    try {
-      const formData = new FormData();
-      formData.append('file', uploadFile);
-      formData.append('prokerId', uploadProkerId);
-      formData.append('tahunAnggaran', uploadTahun.toString());
-      formData.append('jenisDokumen', uploadJenis);
-      formData.append('nomorDokumen', uploadNomor || `DOK/${Date.now().toString().slice(-6)}`);
-      formData.append('namaDokumen', uploadNama || uploadFile.name);
-      formData.append('namaVendor', uploadVendor);
-      if (uploadNilai !== '') formData.append('nilaiDokumen', uploadNilai.toString());
-      formData.append('tanggalDokumen', uploadTanggal);
-      formData.append('catatan', uploadCatatan);
-      formData.append('picPengunggah', currentUser.name);
-      formData.append('userId', currentUser.id);
-      formData.append('userName', currentUser.name);
-      formData.append('userRole', currentUser.role);
-
-      if (replaceTargetDoc) {
-        formData.append('replaceDocId', replaceTargetDoc.id);
-      }
-
-      await onUploadDocument(formData);
-      setShowUploadModal(false);
-      onRefresh();
-    } catch (err: any) {
-      alert('Error mengunggah dokumen: ' + err.message);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleSaveMetadata = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editTargetDoc) return;
-
-    await onUpdateDocument(editTargetDoc.id, {
-      nomorDokumen: editNomor,
-      namaDokumen: editNama,
-      namaVendor: editVendor,
-      tahunAnggaran: editTahun,
-      nilaiDokumen: editNilai !== '' ? Number(editNilai) : undefined
+  // Counts for 5 mandatory types
+  const typeCounts = useMemo(() => {
+    const base = documents.filter((d) => {
+      const docYear = d.tahunAnggaran || prokerMap.get(d.prokerId)?.tahunAnggaran;
+      return filterTahun === 'Semua' || (docYear && docYear.toString() === filterTahun);
     });
-    setEditTargetDoc(null);
-    onRefresh();
-  };
+    return {
+      PKS: base.filter((d) => d.jenisDokumen === 'PKS').length,
+      SPK: base.filter((d) => d.jenisDokumen === 'SPK').length,
+      Invoice: base.filter((d) => d.jenisDokumen === 'Invoice').length,
+      BAPP: base.filter((d) => d.jenisDokumen === 'BAPP').length,
+      'FS-BC': base.filter((d) => d.jenisDokumen === 'FS-BC').length,
+      Total: base.length
+    };
+  }, [documents, prokerMap, filterTahun]);
 
   const getStatusBadge = (status: VerificationStatus) => {
     switch (status) {
@@ -267,29 +366,60 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
         );
       default:
         return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-500/20 text-slate-300 border border-slate-500/30 text-[11px] font-semibold">
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-500/20 text-slate-400 border border-slate-500/30 text-[11px] font-semibold">
+            <Clock className="w-3 h-3" />
             <span>Draft</span>
           </span>
         );
     }
   };
 
-  const canUpload = ['Administrator', 'VP/Manager', 'PIC Proker', 'Reviewer Dokumen'].includes(currentUser.role);
-  const canDelete = currentUser.role === 'Administrator';
+  const getDocTypeIcon = (type: DocumentType) => {
+    switch (type) {
+      case 'PKS':
+        return <FileCheck2 className="w-3.5 h-3.5 text-blue-400" />;
+      case 'SPK':
+        return <FileSignature className="w-3.5 h-3.5 text-emerald-400" />;
+      case 'Invoice':
+        return <Receipt className="w-3.5 h-3.5 text-amber-400" />;
+      case 'BAPP':
+        return <FileSpreadsheet className="w-3.5 h-3.5 text-teal-400" />;
+      case 'FS-BC':
+        return <FileText className="w-3.5 h-3.5 text-purple-400" />;
+    }
+  };
 
-  const title = forcedType ? `Modul Dokumen ${forcedType}` : 'Manajemen Dokumen Investasi CAPEX';
+  const canUpload = ['Administrator', 'VP/Manager', 'PIC Proker'].includes(currentUser.role);
+  const canDelete = ['Administrator'].includes(currentUser.role);
 
   return (
     <div className="space-y-5">
-      {/* Header Bar */}
+      {/* SUCCESS TOAST NOTIFICATION */}
+      {successToast && (
+        <div className="bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 px-4 py-3 rounded-xl flex items-center justify-between shadow-lg text-xs animate-in fade-in">
+          <div className="flex items-center gap-2">
+            <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span className="font-semibold">{successToast}</span>
+          </div>
+          <button onClick={() => setSuccessToast(null)} className="text-emerald-400 hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-[#111e3f] border border-[#203463] p-4 rounded-2xl shadow-lg">
         <div>
           <div className="flex items-center gap-2">
             <FolderLock className="w-5 h-5 text-orange-400" />
-            <h2 className="text-lg font-bold text-white tracking-tight">{title}</h2>
+            <h2 className="text-lg font-bold text-white tracking-tight">
+              {forcedType
+                ? `Manajemen Dokumen ${forcedType}`
+                : 'Pusat Manajemen Dokumen Investasi CAPEX'}
+            </h2>
           </div>
           <p className="text-xs text-slate-400 mt-0.5">
-            Pengelolaan file asli, riwayat versi, preview PDF, dan verifikasi kepatuhan dokumen CAPEX
+            Arsip terpusat PKS, SPK, Invoice, BAPP, dan FS-BC terintegrasi dengan Program Kerja & Realisasi
           </p>
         </div>
 
@@ -316,6 +446,47 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
         </div>
       </div>
 
+      {/* 5 DOCUMENT TYPES SHORTCUT TABS (If not forced) */}
+      {!forcedType && (
+        <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
+          <span className="text-slate-400 font-semibold shrink-0 mr-1 flex items-center gap-1">
+            <Layers className="w-3.5 h-3.5 text-orange-400" />
+            <span>Kategori Dokumen:</span>
+          </span>
+          <button
+            onClick={() => setFilterType('Semua')}
+            className={`px-3 py-1.5 rounded-lg font-semibold transition-all shrink-0 flex items-center gap-1.5 ${
+              filterType === 'Semua'
+                ? 'bg-orange-500 text-white shadow-md'
+                : 'bg-[#13203c] hover:bg-[#1a2c52] text-slate-300 border border-[#1e325c]'
+            }`}
+          >
+            <span>Semua Jenis</span>
+            <span className="px-1.5 py-0.2 rounded bg-black/30 font-mono text-[10px]">
+              {typeCounts.Total}
+            </span>
+          </button>
+
+          {(['PKS', 'SPK', 'Invoice', 'BAPP', 'FS-BC'] as DocumentType[]).map((jt) => (
+            <button
+              key={jt}
+              onClick={() => setFilterType(jt)}
+              className={`px-3 py-1.5 rounded-lg font-semibold transition-all shrink-0 flex items-center gap-1.5 ${
+                filterType === jt
+                  ? 'bg-orange-500 text-white shadow-md'
+                  : 'bg-[#13203c] hover:bg-[#1a2c52] text-slate-300 border border-[#1e325c]'
+              }`}
+            >
+              {getDocTypeIcon(jt)}
+              <span>{jt}</span>
+              <span className="px-1.5 py-0.2 rounded bg-black/30 font-mono text-[10px]">
+                {typeCounts[jt]}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* KPI Cards & Year Status Summary */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
         <div className="bg-[#13203c] border border-[#1e325c] rounded-xl p-3.5 shadow-md">
@@ -327,7 +498,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
           </div>
           <div className="mt-2 flex items-baseline justify-between">
             <span className="text-2xl font-extrabold text-white font-mono">{docKpis.total}</span>
-            <span className="text-slate-400 text-[11px]">Berkas Arsip</span>
+            <span className="text-slate-400 text-[11px]">Berkas Tersimpan</span>
           </div>
         </div>
 
@@ -366,45 +537,6 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
         </div>
       </div>
 
-      {/* Quick Year Selection Chips */}
-      <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
-        <span className="text-slate-400 font-semibold flex items-center gap-1 shrink-0 mr-1">
-          <Calendar className="w-3.5 h-3.5 text-orange-400" />
-          <span>Pilihan Tahun:</span>
-        </span>
-        <button
-          onClick={() => setFilterTahun('Semua')}
-          className={`px-3 py-1 rounded-lg font-medium transition-all shrink-0 ${
-            filterTahun === 'Semua'
-              ? 'bg-orange-500 text-white font-bold shadow-md shadow-orange-500/20'
-              : 'bg-[#13203c] hover:bg-[#1a2c52] text-slate-300 border border-[#1e325c]'
-          }`}
-        >
-          Semua Tahun
-        </button>
-        {availableYears.map((yr) => (
-          <button
-            key={yr}
-            onClick={() => setFilterTahun(yr.toString())}
-            className={`px-3 py-1 rounded-lg font-medium transition-all shrink-0 ${
-              filterTahun === yr.toString()
-                ? 'bg-orange-500 text-white font-bold shadow-md shadow-orange-500/20'
-                : 'bg-[#13203c] hover:bg-[#1a2c52] text-slate-300 border border-[#1e325c]'
-            }`}
-          >
-            TA {yr}
-          </button>
-        ))}
-        {onOpenAddYearModal && (
-          <button
-            onClick={onOpenAddYearModal}
-            className="px-2.5 py-1 rounded-lg text-orange-400 hover:text-orange-300 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 font-semibold transition-all shrink-0"
-          >
-            + Tambah Tahun
-          </button>
-        )}
-      </div>
-
       {/* Filter Toolbar */}
       <div className="bg-[#13203c] border border-[#1e325c] rounded-xl p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs">
         <div className="flex items-center gap-2 flex-1 min-w-[240px]">
@@ -414,7 +546,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Cari nomor dokumen, nama file, vendor..."
+              placeholder="Cari nomor dokumen, file, vendor, proker..."
               className="w-full bg-[#0d1733] border border-[#213565] text-white text-xs rounded-lg pl-8 pr-3 py-1.5 focus:outline-none focus:border-orange-500"
             />
           </div>
@@ -448,24 +580,6 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
               )}
             </select>
           </div>
-
-          {!forcedType && (
-            <div className="flex items-center gap-1 bg-[#0d1733] border border-[#213565] px-2 py-1 rounded-lg">
-              <span className="text-slate-400">Jenis:</span>
-              <select
-                value={filterType}
-                onChange={(e) => setFilterType(e.target.value)}
-                className="bg-transparent text-white font-medium focus:outline-none cursor-pointer"
-              >
-                <option value="Semua" className="bg-[#0d1733]">Semua Jenis</option>
-                <option value="PKS" className="bg-[#0d1733]">PKS</option>
-                <option value="SPK" className="bg-[#0d1733]">SPK</option>
-                <option value="Invoice" className="bg-[#0d1733]">Invoice</option>
-                <option value="BAPP" className="bg-[#0d1733]">BAPP</option>
-                <option value="FS-BC" className="bg-[#0d1733]">FS-BC</option>
-              </select>
-            </div>
-          )}
 
           <div className="flex items-center gap-1 bg-[#0d1733] border border-[#213565] px-2 py-1 rounded-lg">
             <span className="text-slate-400">Program Kerja:</span>
@@ -502,7 +616,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
         </div>
       </div>
 
-      {/* Dokumen Table - matching Prompt Section 5 */}
+      {/* Dokumen Table */}
       <div className="bg-[#13203c] border border-[#1e325c] rounded-2xl shadow-xl overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs border-collapse">
@@ -522,31 +636,39 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
               {filteredDocs.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="py-12 text-center text-slate-400">
-                    Tidak ada dokumen yang sesuai dengan kriteria filter.
+                    <FolderLock className="w-8 h-8 text-slate-500 mx-auto mb-2 opacity-50" />
+                    <p className="font-medium">Tidak ada dokumen yang ditemukan sesuai filter.</p>
+                    {canUpload && (
+                      <button
+                        onClick={() => handleOpenUpload()}
+                        className="mt-3 px-3.5 py-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded-lg text-xs font-semibold shadow"
+                      >
+                        + Upload Dokumen Baru
+                      </button>
+                    )}
                   </td>
                 </tr>
               ) : (
                 filteredDocs.map((doc) => (
                   <tr key={doc.id} className="hover:bg-[#18294e]/70 transition-colors">
-                    <td className="py-3 px-3 max-w-[210px]">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="font-mono font-bold text-blue-400">
-                          {doc.kodeProker}
+                    <td className="py-3 px-3">
+                      <div className="font-mono font-bold text-orange-400 flex items-center gap-1.5">
+                        <span className="px-1.5 py-0.2 rounded bg-[#0d1733] border border-[#213565] text-[10px]">
+                          TA {doc.tahunAnggaran || prokerMap.get(doc.prokerId)?.tahunAnggaran || 2026}
                         </span>
-                        <span className="px-1.5 py-0.5 rounded bg-orange-500/15 text-orange-400 font-mono text-[9px] border border-orange-500/25 font-bold">
-                          TA {doc.tahunAnggaran || prokerMap.get(doc.prokerId)?.tahunAnggaran || '-'}
-                        </span>
+                        <span>{doc.kodeProker}</span>
                       </div>
-                      <span className="text-white text-[11px] truncate block mt-0.5" title={doc.namaProker}>
+                      <div className="font-medium text-slate-200 truncate max-w-xs mt-0.5">
                         {doc.namaProker}
+                      </div>
+                    </td>
+                    <td className="py-3 px-3 text-center">
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded font-mono font-bold text-[11px] bg-[#1a2d54] text-white border border-[#233f7a]">
+                        {getDocTypeIcon(doc.jenisDokumen)}
+                        <span>{doc.jenisDokumen}</span>
                       </span>
                     </td>
-                    <td className="py-3 px-3 text-center whitespace-nowrap">
-                      <span className="px-2 py-0.5 rounded bg-blue-500/20 text-blue-400 font-mono font-bold text-[10px]">
-                        {doc.jenisDokumen}
-                      </span>
-                    </td>
-                    <td className="py-3 px-3 font-mono font-semibold text-slate-200 whitespace-nowrap">
+                    <td className="py-3 px-3 font-mono text-slate-200">
                       <div>{doc.nomorDokumen}</div>
                       <span className="text-[10px] text-orange-400 font-mono">v{doc.versi}</span>
                     </td>
@@ -554,6 +676,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                       <button
                         onClick={() => onPreviewDocument(doc)}
                         className="text-white font-medium hover:text-orange-400 text-left block truncate max-w-xs transition-colors"
+                        title="Klik untuk melihat preview"
                       >
                         {doc.namaFileAsli}
                       </button>
@@ -628,7 +751,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
         </div>
       </div>
 
-      {/* UPLOAD / UPDATE VERSION MODAL */}
+      {/* UPLOAD / UPDATE VERSION MODAL (PKS, SPK, INVOICE, BAPP, FS-BC) */}
       {showUploadModal && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto animate-in fade-in">
           <div className="bg-[#111e3f] border border-[#24396b] rounded-2xl w-full max-w-xl shadow-2xl p-6 space-y-4">
@@ -638,7 +761,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                 <span>
                   {replaceTargetDoc
                     ? `Upload Versi Terbaru: ${replaceTargetDoc.nomorDokumen}`
-                    : 'Upload Dokumen Investasi Baru'}
+                    : `Upload Dokumen ${uploadJenis} Investasi`}
                 </span>
               </h3>
               <button
@@ -650,24 +773,89 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
             </div>
 
             <form onSubmit={handleSubmitUpload} className="space-y-3.5 text-xs">
+              {/* Jenis Dokumen Selector Cards */}
+              {!replaceTargetDoc && (
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-slate-300 font-semibold">
+                      Jenis Dokumen Investasi *
+                    </label>
+                    {forcedType && (
+                      <span className="text-[10px] text-orange-400 font-mono font-semibold">
+                        Modul Khusus: {forcedType}
+                      </span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-5 gap-2">
+                    {(['PKS', 'SPK', 'Invoice', 'BAPP', 'FS-BC'] as DocumentType[]).map((jt) => (
+                      <button
+                        type="button"
+                        key={jt}
+                        onClick={() => {
+                          setUploadJenis(jt);
+                          setUploadNomor(generateNomorDokumen(jt, uploadTahun, uploadProkerId));
+                        }}
+                        className={`p-2.5 rounded-xl border flex flex-col items-center justify-center gap-1 transition-all text-center ${
+                          uploadJenis === jt
+                            ? 'bg-orange-500/20 border-orange-500 text-orange-400 font-bold shadow-md ring-1 ring-orange-500/40'
+                            : 'bg-[#0d1733] border-[#213565] text-slate-300 hover:bg-[#152347]'
+                        }`}
+                      >
+                        {getDocTypeIcon(jt)}
+                        <span className="text-[11px] font-mono">{jt}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* File Dropzone */}
               <div>
                 <label className="block text-slate-300 font-semibold mb-1">
-                  Pilih Berkas Dokumen (PDF, DOCX, XLSX) *
+                  Pilih Berkas Dokumen (PDF, DOCX, XLSX, JPG, PNG) *
                 </label>
-                <div className="border-2 border-dashed border-[#24396b] hover:border-orange-500 rounded-xl p-4 text-center bg-[#0d1733] cursor-pointer">
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                  className={`border-2 border-dashed rounded-xl p-5 text-center transition-all cursor-pointer ${
+                    isDragging
+                      ? 'border-orange-500 bg-orange-500/10'
+                      : uploadFile
+                      ? 'border-emerald-500/60 bg-emerald-500/5'
+                      : 'border-[#24396b] hover:border-orange-500 bg-[#0d1733]'
+                  }`}
+                >
                   <input
+                    ref={fileInputRef}
                     type="file"
-                    required
-                    accept=".pdf, .doc, .docx, .xls, .xlsx"
-                    onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
-                    className="w-full text-xs text-slate-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-orange-500 file:text-white hover:file:bg-orange-600"
+                    accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,application/pdf,image/*,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0] || null;
+                      setUploadFile(file);
+                      if (file && !uploadNama) {
+                        setUploadNama(file.name.replace(/\.[^/.]+$/, ''));
+                      }
+                    }}
+                    className="hidden"
                   />
-                  {uploadFile && (
-                    <p className="mt-2 text-emerald-400 font-mono text-[11px]">
-                      File terpilih: {uploadFile.name} ({formatFileSize(uploadFile.size)})
-                    </p>
-                  )}
+                  <div className="flex flex-col items-center justify-center gap-1.5 py-1">
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center ${uploadFile ? 'bg-emerald-500/20 text-emerald-400' : 'bg-orange-500/20 text-orange-400'}`}>
+                      <FileUp className="w-5 h-5" />
+                    </div>
+                    {uploadFile ? (
+                      <div>
+                        <p className="text-emerald-400 font-bold font-mono text-xs">{uploadFile.name}</p>
+                        <p className="text-slate-400 text-[10px] mt-0.5">{formatFileSize(uploadFile.size)} · Klik untuk mengganti berkas</p>
+                      </div>
+                    ) : (
+                      <div>
+                        <p className="text-white font-semibold text-xs">Klik di sini untuk memilih berkas atau seret & lepas file</p>
+                        <p className="text-slate-400 text-[11px] mt-0.5">Mendukung PDF, Word (DOCX), Excel (XLSX), serta scan/foto (JPG, PNG)</p>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -689,11 +877,9 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                           const yr = parseInt(e.target.value);
                           setUploadTahun(yr);
                           const matching = workPrograms.filter((p) => p.tahunAnggaran === yr);
-                          if (matching.length > 0) {
-                            setUploadProkerId(matching[0].id);
-                          } else {
-                            setUploadProkerId('');
-                          }
+                          const newPid = matching.length > 0 ? matching[0].id : workPrograms[0]?.id || '';
+                          setUploadProkerId(newPid);
+                          setUploadNomor(generateNomorDokumen(uploadJenis, yr, newPid));
                         }
                       }}
                       className="w-full bg-[#0d1733] border border-[#213565] rounded-lg p-2 text-white font-mono focus:border-orange-500 cursor-pointer"
@@ -719,18 +905,18 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                     <select
                       disabled={!!replaceTargetDoc}
                       value={uploadProkerId}
-                      onChange={(e) => setUploadProkerId(e.target.value)}
-                      className="w-full bg-[#0d1733] border border-[#213565] rounded-lg p-2 text-white focus:border-orange-500"
+                      onChange={(e) => {
+                        const newPid = e.target.value;
+                        setUploadProkerId(newPid);
+                        setUploadNomor(generateNomorDokumen(uploadJenis, uploadTahun, newPid));
+                      }}
+                      className="w-full bg-[#0d1733] border border-[#213565] rounded-lg p-2 text-white focus:border-orange-500 cursor-pointer"
                     >
-                      {uploadProkers.length === 0 ? (
-                        <option value="">(Belum ada program kerja pada TA {uploadTahun})</option>
-                      ) : (
-                        uploadProkers.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.kodeProker} - {p.namaProker}
-                          </option>
-                        ))
-                      )}
+                      {uploadProkers.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          [{p.tahunAnggaran}] {p.kodeProker} - {p.namaProker}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -748,51 +934,44 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                     <div className="text-right shrink-0">
                       <span className="text-[10px] text-slate-400 block">RKAP CAPEX</span>
                       <span className="font-mono text-emerald-400 font-bold">
-                        {formatRupiah(prokerMap.get(uploadProkerId)?.nilaiCapexRkap || 0)}
+                        Rp {prokerMap.get(uploadProkerId)?.nilaiCapexRkap?.toFixed(2)} M
                       </span>
                     </div>
                   </div>
                 )}
               </div>
 
-              {/* Jenis & Nomor */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-300 font-semibold mb-1">Jenis Dokumen *</label>
-                  <select
-                    disabled={!!replaceTargetDoc || !!forcedType}
-                    value={uploadJenis}
-                    onChange={(e) => setUploadJenis(e.target.value as any)}
-                    className="w-full bg-[#0d1733] border border-[#213565] rounded-lg p-2 text-white focus:border-orange-500"
+              {/* Nomor Dokumen with Generator Button */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-slate-300 font-semibold">Nomor Dokumen *</label>
+                  <button
+                    type="button"
+                    onClick={handleQuickGenerateNomor}
+                    className="text-orange-400 hover:text-orange-300 text-[11px] font-semibold flex items-center gap-1"
                   >
-                    <option value="PKS">PKS (Perjanjian Kerja Sama)</option>
-                    <option value="SPK">SPK (Surat Perintah Kerja)</option>
-                    <option value="Invoice">Invoice (Tagihan)</option>
-                    <option value="BAPP">BAPP (Berita Acara)</option>
-                    <option value="FS-BC">FS-BC (Feasibility Study)</option>
-                  </select>
+                    <Sparkles className="w-3 h-3" />
+                    <span>Generate No. Otomatis</span>
+                  </button>
                 </div>
-                <div>
-                  <label className="block text-slate-300 font-semibold mb-1">Nomor Dokumen *</label>
-                  <input
-                    type="text"
-                    required
-                    value={uploadNomor}
-                    onChange={(e) => setUploadNomor(e.target.value)}
-                    placeholder="Contoh: PKS.120/DIR-POS/2026"
-                    className="w-full bg-[#0d1733] border border-[#213565] rounded-lg p-2 text-white font-mono focus:border-orange-500"
-                  />
-                </div>
+                <input
+                  type="text"
+                  required
+                  value={uploadNomor}
+                  onChange={(e) => setUploadNomor(e.target.value)}
+                  placeholder="Contoh: PKS.120/DIR-POS/2026"
+                  className="w-full bg-[#0d1733] border border-[#213565] rounded-lg p-2 text-white font-mono focus:border-orange-500"
+                />
               </div>
 
               {/* Nama Dokumen */}
               <div>
-                <label className="block text-slate-300 font-semibold mb-1">Judul / Nama Dokumen</label>
+                <label className="block text-slate-300 font-semibold mb-1">Judul / Keterangan Dokumen</label>
                 <input
                   type="text"
                   value={uploadNama}
                   onChange={(e) => setUploadNama(e.target.value)}
-                  placeholder="Keterangan judul dokumen..."
+                  placeholder="Contoh: Perjanjian Kerja Sama Pengadaan Konsultan..."
                   className="w-full bg-[#0d1733] border border-[#213565] rounded-lg p-2 text-white focus:border-orange-500"
                 />
               </div>
@@ -800,7 +979,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
               {/* Vendor & Nilai */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-slate-300 font-semibold mb-1">Nama Vendor / Penyedia</label>
+                  <label className="block text-slate-300 font-semibold mb-1">Nama Vendor / Rekanan</label>
                   <input
                     type="text"
                     value={uploadVendor}
@@ -822,14 +1001,14 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                 </div>
               </div>
 
-              {/* Notes */}
+              {/* Catatan */}
               <div>
                 <label className="block text-slate-300 font-semibold mb-1">Catatan Pengunggahan</label>
                 <textarea
                   rows={2}
                   value={uploadCatatan}
                   onChange={(e) => setUploadCatatan(e.target.value)}
-                  placeholder="Keterangan versi baru atau justifikasi dokumen..."
+                  placeholder="Keterangan versi atau kelengkapan berkas..."
                   className="w-full bg-[#0d1733] border border-[#213565] rounded-lg p-2 text-white focus:border-orange-500"
                 />
               </div>
@@ -845,9 +1024,21 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                 <button
                   type="submit"
                   disabled={!uploadFile || isSubmitting}
-                  className="px-5 py-2 bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white font-bold rounded-lg shadow-md disabled:opacity-50"
+                  className="px-5 py-2 bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white font-bold rounded-lg shadow-md disabled:opacity-50 flex items-center gap-1.5"
                 >
-                  {isSubmitting ? 'Mengunggah...' : replaceTargetDoc ? 'Simpan Versi Baru' : 'Upload Dokumen'}
+                  {isSubmitting ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Mengunggah...</span>
+                    </>
+                  ) : replaceTargetDoc ? (
+                    <span>Simpan Versi Baru</span>
+                  ) : (
+                    <>
+                      <FileUp className="w-4 h-4" />
+                      <span>Upload Dokumen</span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>
@@ -881,11 +1072,11 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                 <select
                   value={editTahun}
                   onChange={(e) => setEditTahun(parseInt(e.target.value))}
-                  className="w-full bg-[#0d1733] border border-[#213565] rounded-lg p-2 text-white font-mono focus:border-orange-500 cursor-pointer"
+                  className="w-full bg-[#0d1733] border border-[#213565] rounded-lg p-2 text-white font-mono"
                 >
                   {availableYears.map((yr) => (
-                    <option key={yr} value={yr} className="bg-[#0d1733]">
-                      Tahun Anggaran {yr}
+                    <option key={yr} value={yr}>
+                      Tahun {yr}
                     </option>
                   ))}
                 </select>
@@ -901,8 +1092,9 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                   className="w-full bg-[#0d1733] border border-[#213565] rounded-lg p-2 text-white font-mono"
                 />
               </div>
+
               <div>
-                <label className="block text-slate-300 font-semibold mb-1">Nama Dokumen</label>
+                <label className="block text-slate-300 font-semibold mb-1">Judul Dokumen</label>
                 <input
                   type="text"
                   required
@@ -911,8 +1103,9 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                   className="w-full bg-[#0d1733] border border-[#213565] rounded-lg p-2 text-white"
                 />
               </div>
+
               <div>
-                <label className="block text-slate-300 font-semibold mb-1">Nama Vendor / Penyedia</label>
+                <label className="block text-slate-300 font-semibold mb-1">Nama Vendor</label>
                 <input
                   type="text"
                   value={editVendor}
@@ -920,6 +1113,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                   className="w-full bg-[#0d1733] border border-[#213565] rounded-lg p-2 text-white"
                 />
               </div>
+
               <div>
                 <label className="block text-slate-300 font-semibold mb-1">Nilai Dokumen (Miliar Rp)</label>
                 <input
@@ -935,13 +1129,13 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setEditTargetDoc(null)}
-                  className="px-4 py-2 bg-[#18294e] text-slate-300 rounded-lg"
+                  className="px-4 py-2 bg-[#18294e] text-slate-300 rounded-lg hover:bg-[#203666]"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-lg"
+                  className="px-5 py-2 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-lg"
                 >
                   Simpan Perubahan
                 </button>
@@ -954,20 +1148,20 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
       {/* DELETE CONFIRMATION MODAL */}
       {deleteTargetId && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#111e3f] border border-[#24396b] rounded-2xl p-6 max-w-sm w-full shadow-2xl space-y-4">
-            <div className="w-12 h-12 rounded-full bg-red-500/20 border border-red-500/30 flex items-center justify-center text-red-400 mx-auto">
-              <AlertTriangle className="w-6 h-6" />
+          <div className="bg-[#111e3f] border border-red-500/30 rounded-2xl w-full max-w-sm shadow-2xl p-6 text-center space-y-4">
+            <div className="w-12 h-12 rounded-full bg-red-500/20 text-red-400 flex items-center justify-center mx-auto">
+              <Trash2 className="w-6 h-6" />
             </div>
-            <div className="text-center">
-              <h3 className="text-base font-bold text-white">Hapus Dokumen Investasi</h3>
-              <p className="text-xs text-slate-300 mt-2">
-                Apakah Anda yakin ingin menghapus dokumen ini beserta seluruh arsip filenya? Tindakan ini dicatat dalam log audit.
+            <div>
+              <h3 className="text-base font-bold text-white">Hapus Berkas Dokumen?</h3>
+              <p className="text-xs text-slate-400 mt-1">
+                Tindakan ini tidak dapat dibatalkan. Berkas fisik dan riwayat audit dokumen ini akan dihapus dari sistem.
               </p>
             </div>
-            <div className="flex items-center gap-2 pt-2">
+            <div className="flex justify-center gap-2 pt-2">
               <button
                 onClick={() => setDeleteTargetId(null)}
-                className="flex-1 px-4 py-2 bg-[#18294e] text-slate-300 text-xs font-semibold rounded-lg"
+                className="px-4 py-2 bg-[#18294e] text-slate-300 rounded-lg hover:bg-[#203666] text-xs font-semibold"
               >
                 Batal
               </button>
@@ -977,9 +1171,9 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                   setDeleteTargetId(null);
                   onRefresh();
                 }}
-                className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg shadow-lg"
+                className="px-5 py-2 bg-red-600 hover:bg-red-500 text-white font-bold rounded-lg text-xs shadow-md"
               >
-                Hapus
+                Ya, Hapus Dokumen
               </button>
             </div>
           </div>

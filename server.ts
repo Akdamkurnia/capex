@@ -21,6 +21,7 @@ import {
 import {
   WorkProgram,
   InvestmentDocument,
+  DocumentType,
   PhysicalProgressRecord,
   BudgetRealizationRelease,
   FinancialAnalysisFSBC,
@@ -29,7 +30,11 @@ import {
   DashboardStats,
   DocumentChecklistSummary,
   YearSummary,
-  User
+  User,
+  QuarterType,
+  RealisasiType,
+  OgpStatus,
+  KategoriRealisasi
 } from './src/types';
 
 const app = express();
@@ -37,8 +42,9 @@ const PORT = process.env.PORT || 3000;
 const isDev = process.env.NODE_ENV !== 'production';
 
 // Ensure data and uploads directories exist
-const UPLOADS_DIR = path.resolve(__dirname, 'uploads');
-const DATA_DIR = path.resolve(__dirname, 'data');
+const ROOT_DIR = process.cwd();
+const UPLOADS_DIR = path.resolve(ROOT_DIR, 'uploads');
+const DATA_DIR = path.resolve(ROOT_DIR, 'data');
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -109,6 +115,7 @@ sampleFiles.forEach(sf => {
 // Database state
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 interface DatabaseState {
+  isInitialized?: boolean;
   availableYears: number[];
   workPrograms: WorkProgram[];
   documents: InvestmentDocument[];
@@ -120,7 +127,49 @@ interface DatabaseState {
   users: User[];
 }
 
+// Classifier function for PT Pos Indonesia CAPEX Realizations
+export function classifyRealization(r: Partial<BudgetRealizationRelease>): {
+  tipeRealisasi: RealisasiType;
+  statusOgp: OgpStatus;
+  kategoriRealisasi: KategoriRealisasi;
+} {
+  let tipe: RealisasiType = (r.tipeRealisasi as RealisasiType);
+  let statusOgp: OgpStatus = (r.statusOgp as OgpStatus);
+
+  if (!statusOgp) {
+    statusOgp = r.statusPembayaran === 'Belum di OGP' ? 'Belum di OGP' : 'Sudah di OGP';
+  }
+
+  if (!tipe) {
+    const noNde = (r.noNde || '').toUpperCase();
+    const ket = (r.keteranganRelease || '').toUpperCase();
+    if (noNde.includes('NPP') || ket.includes('NPP')) {
+      tipe = 'NPP';
+    } else if (noNde.includes('ACCRUE') && statusOgp === 'Belum di OGP') {
+      tipe = 'ACCRUE';
+    } else if (ket.includes('ACCRUE') && statusOgp === 'Belum di OGP') {
+      tipe = 'ACCRUE';
+    } else if (statusOgp === 'Sudah di OGP') {
+      tipe = 'NPP';
+    } else {
+      tipe = 'ACCRUE';
+    }
+  }
+
+  let kategoriRealisasi: KategoriRealisasi = 'Accrual';
+  if (tipe === 'ACCRUE') {
+    kategoriRealisasi = 'Accrual';
+  } else if (statusOgp === 'Sudah di OGP') {
+    kategoriRealisasi = 'NPP - Sudah di OGP';
+  } else {
+    kategoriRealisasi = 'NPP - Belum di OGP';
+  }
+
+  return { tipeRealisasi: tipe, statusOgp, kategoriRealisasi };
+}
+
 let db: DatabaseState = {
+  isInitialized: true,
   availableYears: [...INITIAL_AVAILABLE_YEARS],
   workPrograms: [...INITIAL_WORK_PROGRAMS],
   documents: [...INITIAL_DOCUMENTS],
@@ -132,30 +181,150 @@ let db: DatabaseState = {
   users: [...INITIAL_USERS]
 };
 
+function normalizeToMiliar(val: any): number {
+  if (val === undefined || val === null || val === '') return 0;
+  const num = typeof val === 'number' ? val : parseFloat(val);
+  if (isNaN(num)) return 0;
+  if (Math.abs(num) >= 1_000_000) {
+    return parseFloat((num / 1_000_000_000).toFixed(4));
+  }
+  return parseFloat(num.toFixed(4));
+}
+
+// Recalculates proker financial metrics (in Miliar) from actual realizations
+function syncProkerFinancials(targetProkerId?: string) {
+  const prokersToSync = targetProkerId
+    ? db.workPrograms.filter(p => p.id === targetProkerId)
+    : db.workPrograms;
+
+  for (const proker of prokersToSync) {
+    const prokerRealizations = db.realizations.filter(
+      r => r.prokerId === proker.id || (r.kodeProker && r.kodeProker.trim().toLowerCase() === proker.kodeProker.trim().toLowerCase())
+    );
+
+    if (prokerRealizations.length > 0) {
+      let sumReleaseRp = 0;
+      let sumAccrualRp = 0;
+      let sumNppSudahOgpRp = 0;
+      let sumNppBelumOgpRp = 0;
+
+      for (const r of prokerRealizations) {
+        sumReleaseRp += (r.bsuRelease || 0);
+        const cls = classifyRealization(r);
+        r.tipeRealisasi = cls.tipeRealisasi;
+        r.statusOgp = cls.statusOgp;
+        r.kategoriRealisasi = cls.kategoriRealisasi;
+
+        const val = r.bsuAktual || 0;
+        if (cls.kategoriRealisasi === 'Accrual') {
+          sumAccrualRp += val;
+        } else if (cls.kategoriRealisasi === 'NPP - Sudah di OGP') {
+          sumNppSudahOgpRp += val;
+        } else if (cls.kategoriRealisasi === 'NPP - Belum di OGP') {
+          sumNppBelumOgpRp += val;
+        }
+      }
+
+      const sumNppRp = sumNppSudahOgpRp + sumNppBelumOgpRp;
+      const sumAktualRp = sumAccrualRp + sumNppSudahOgpRp + sumNppBelumOgpRp;
+      const sisaAccrueRp = Math.max(0, sumAccrualRp - sumNppSudahOgpRp);
+
+      if (sumReleaseRp > 0) {
+        proker.nilaiRilis = parseFloat((sumReleaseRp / 1_000_000_000).toFixed(4));
+      }
+      proker.nilaiAccrue = parseFloat((sumAccrualRp / 1_000_000_000).toFixed(4));
+      proker.nilaiOgp = parseFloat((sumNppSudahOgpRp / 1_000_000_000).toFixed(4));
+      proker.belumOgp = parseFloat((sumNppBelumOgpRp / 1_000_000_000).toFixed(4));
+      proker.nilaiNpp = parseFloat((sumNppRp / 1_000_000_000).toFixed(4));
+      proker.nilaiAktual = parseFloat((sumAktualRp / 1_000_000_000).toFixed(4));
+      proker.sisaAccrue = parseFloat((sisaAccrueRp / 1_000_000_000).toFixed(4));
+    } else {
+      if (proker.nilaiAccrue !== undefined && proker.nilaiOgp !== undefined) {
+        proker.sisaAccrue = parseFloat(Math.max(0, (proker.nilaiAccrue || 0) - (proker.nilaiOgp || 0)).toFixed(4));
+      }
+    }
+  }
+}
+
+// Atomic & crash-safe write to prevent file corruption
+function saveDb() {
+  try {
+    const tempFile = `${DB_FILE}.tmp.${Date.now()}`;
+    fs.writeFileSync(tempFile, JSON.stringify(db, null, 2), 'utf-8');
+    fs.renameSync(tempFile, DB_FILE);
+  } catch (err) {
+    console.error('Error saving database atomically, trying direct write:', err);
+    try {
+      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
+    } catch (err2) {
+      console.error('Direct write failed:', err2);
+    }
+  }
+}
+
 if (fs.existsSync(DB_FILE)) {
   try {
     const raw = fs.readFileSync(DB_FILE, 'utf-8');
     const parsed = JSON.parse(raw);
     db = { ...db, ...parsed };
 
-    // Merge missing historical prokers if any
-    INITIAL_WORK_PROGRAMS.forEach(initP => {
-      if (!db.workPrograms.some(p => p.id === initP.id || p.kodeProker === initP.kodeProker)) {
-        db.workPrograms.push(initP);
-      }
+    // If database was never initialized before, seed once
+    if (!parsed.isInitialized) {
+      INITIAL_WORK_PROGRAMS.forEach(initP => {
+        if (!db.workPrograms.some(p => p.id === initP.id || p.kodeProker === initP.kodeProker)) {
+          db.workPrograms.push(initP);
+        }
+      });
+      INITIAL_DOCUMENTS.forEach(initDoc => {
+        if (!db.documents.some(d => d.id === initDoc.id)) {
+          db.documents.push(initDoc);
+        }
+      });
+      INITIAL_REALIZATIONS.forEach(initR => {
+        if (!db.realizations.some(r => r.id === initR.id)) {
+          db.realizations.push(initR);
+        }
+      });
+      INITIAL_PROGRESS_RECORDS.forEach(initPrg => {
+        if (!db.progressRecords.some(r => r.id === initPrg.id)) {
+          db.progressRecords.push(initPrg);
+        }
+      });
+      db.isInitialized = true;
+    }
+
+    // Ensure all realizations are classified
+    db.realizations.forEach(r => {
+      const cls = classifyRealization(r);
+      r.tipeRealisasi = cls.tipeRealisasi;
+      r.statusOgp = cls.statusOgp;
+      r.kategoriRealisasi = cls.kategoriRealisasi;
     });
 
-    // Merge missing documents if any
-    INITIAL_DOCUMENTS.forEach(initDoc => {
-      if (!db.documents.some(d => d.id === initDoc.id)) {
-        db.documents.push(initDoc);
+    // Ensure every progress record has quarter, labelMinggu, and tahunAnggaran
+    db.progressRecords.forEach(r => {
+      const p = db.workPrograms.find(wp => wp.id === r.prokerId);
+      if (!r.tahunAnggaran) {
+        r.tahunAnggaran = p?.tahunAnggaran || 2026;
       }
-    });
-
-    // Merge missing realizations if any
-    INITIAL_REALIZATIONS.forEach(initR => {
-      if (!db.realizations.some(r => r.id === initR.id)) {
-        db.realizations.push(initR);
+      if (!r.quarter) {
+        if (r.mingguKe) {
+          if (r.mingguKe <= 13) r.quarter = 'Q1';
+          else if (r.mingguKe <= 26) r.quarter = 'Q2';
+          else if (r.mingguKe <= 39) r.quarter = 'Q3';
+          else r.quarter = 'Q4';
+        } else if (r.tanggalPelaporan) {
+          const m = new Date(r.tanggalPelaporan).getMonth() + 1;
+          if (m <= 3) r.quarter = 'Q1';
+          else if (m <= 6) r.quarter = 'Q2';
+          else if (m <= 9) r.quarter = 'Q3';
+          else r.quarter = 'Q4';
+        } else {
+          r.quarter = 'Q4';
+        }
+      }
+      if (!r.labelMinggu) {
+        r.labelMinggu = r.mingguKe ? `W${r.mingguKe}` : 'W1';
       }
     });
 
@@ -219,27 +388,25 @@ if (fs.existsSync(DB_FILE)) {
         }
       });
     }
+
+    // Sync proker financials from classified realizations
+    syncProkerFinancials();
+    db.isInitialized = true;
+    saveDb();
   } catch (e) {
     console.error('Failed reading existing DB, using defaults', e);
   }
-}
-
-function normalizeToMiliar(val: any): number {
-  if (val === undefined || val === null || val === '') return 0;
-  const num = typeof val === 'number' ? val : parseFloat(val);
-  if (isNaN(num)) return 0;
-  if (Math.abs(num) >= 1_000_000) {
-    return parseFloat((num / 1_000_000_000).toFixed(4));
-  }
-  return parseFloat(num.toFixed(4));
-}
-
-function saveDb() {
-  try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving database:', err);
-  }
+} else {
+  // Fresh install
+  db.isInitialized = true;
+  db.realizations.forEach(r => {
+    const cls = classifyRealization(r);
+    r.tipeRealisasi = cls.tipeRealisasi;
+    r.statusOgp = cls.statusOgp;
+    r.kategoriRealisasi = cls.kategoriRealisasi;
+  });
+  syncProkerFinancials();
+  saveDb();
 }
 
 function logAudit(
@@ -661,10 +828,43 @@ app.post('/api/documents/upload', upload.single('file'), (req: Request, res: Res
     return res.status(400).json({ error: 'File dokumen harus dipilih untuk diunggah' });
   }
 
-  const proker = db.workPrograms.find(p => p.id === body.prokerId);
+  // Normalize Document Type to one of the 5 mandatory types
+  let jenis: DocumentType = 'PKS';
+  const rawJenis = (body.jenisDokumen || '').trim().toUpperCase();
+  if (rawJenis.includes('SPK')) {
+    jenis = 'SPK';
+  } else if (rawJenis.includes('INV')) {
+    jenis = 'Invoice';
+  } else if (rawJenis.includes('BAPP')) {
+    jenis = 'BAPP';
+  } else if (rawJenis.includes('FS') || rawJenis.includes('BC')) {
+    jenis = 'FS-BC';
+  } else {
+    jenis = 'PKS';
+  }
+
+  // Find linked proker safely
+  let proker = db.workPrograms.find(p => p.id === body.prokerId);
+  if (!proker && body.kodeProker) {
+    proker = db.workPrograms.find(p => p.kodeProker === body.kodeProker);
+  }
+  if (!proker && db.workPrograms.length > 0) {
+    proker = db.workPrograms[0];
+  }
+
+  const prokerId = proker ? proker.id : (body.prokerId || 'PRK-001');
   const kodeProker = proker ? proker.kodeProker : (body.kodeProker || '-');
   const namaProker = proker ? proker.namaProker : (body.namaProker || '-');
   const tahunAnggaran = body.tahunAnggaran ? parseInt(body.tahunAnggaran) : (proker ? proker.tahunAnggaran : 2026);
+
+  // Auto-generate realistic document number if empty or placeholder
+  let nomorDokumen = (body.nomorDokumen || '').trim();
+  if (!nomorDokumen || nomorDokumen === '-') {
+    const randomNum = Math.floor(100 + Math.random() * 900);
+    nomorDokumen = `${jenis}.${randomNum}/DIR-POS/${tahunAnggaran}`;
+  }
+
+  const namaDokumen = (body.namaDokumen || '').trim() || file.originalname;
 
   // Check if replacing version or new doc
   if (body.replaceDocId) {
@@ -688,10 +888,10 @@ app.post('/api/documents/upload', upload.single('file'), (req: Request, res: Res
       existing.namaFileAsli = file.originalname;
       existing.lokasiPenyimpanan = file.path;
       existing.ukuranFile = file.size;
-      existing.tipeMime = file.mimetype;
+      existing.tipeMime = file.mimetype || 'application/pdf';
       existing.fileUrl = `/uploads/${file.filename}`;
       existing.tanggalUpload = new Date().toISOString().substring(0, 10);
-      existing.picPengunggah = body.picPengunggah || 'User Sistem';
+      existing.picPengunggah = body.picPengunggah || 'PIC Sistem';
       existing.statusVerifikasi = 'Menunggu Verifikasi';
       existing.catatanReviewer = body.catatan || 'Versi dokumen diperbarui, menunggu verifikasi ulang.';
       if (body.tahunAnggaran) {
@@ -699,8 +899,11 @@ app.post('/api/documents/upload', upload.single('file'), (req: Request, res: Res
       }
 
       db.documents[existingIndex] = existing;
+      if (proker) {
+        proker.terakhirDiperbarui = new Date().toISOString().substring(0, 10);
+      }
       saveDb();
-      logAudit(body.userId, body.userName, body.userRole, 'UPDATE_DOCUMENT_VERSION', 'DOKUMEN', existing.id, `Memperbarui versi dokumen ${existing.nomorDokumen} ke v${newVersion}`, req);
+      logAudit(body.userId, body.userName, body.userRole, 'UPDATE_DOCUMENT_VERSION', 'DOKUMEN', existing.id, `Memperbarui versi dokumen ${existing.nomorDokumen} (${jenis}) ke v${newVersion}`, req);
 
       return res.json(existing);
     }
@@ -708,18 +911,18 @@ app.post('/api/documents/upload', upload.single('file'), (req: Request, res: Res
 
   const newDoc: InvestmentDocument = {
     id: 'DOC-' + Date.now(),
-    prokerId: body.prokerId || 'PRK-001',
+    prokerId,
     kodeProker,
     namaProker,
     tahunAnggaran,
-    jenisDokumen: (body.jenisDokumen as any) || 'PKS',
-    nomorDokumen: body.nomorDokumen || `DOK/${Date.now().toString().slice(-6)}`,
-    namaDokumen: body.namaDokumen || file.originalname,
+    jenisDokumen: jenis,
+    nomorDokumen,
+    namaDokumen,
     tanggalDokumen: body.tanggalDokumen || new Date().toISOString().substring(0, 10),
     tanggalBerlaku: body.tanggalBerlaku,
     nilaiDokumen: body.nilaiDokumen ? parseFloat(body.nilaiDokumen) : undefined,
-    namaVendor: body.namaVendor || '',
-    picPengunggah: body.picPengunggah || 'PIC Pengunggah',
+    namaVendor: (body.namaVendor || '').trim(),
+    picPengunggah: (body.picPengunggah || '').trim() || 'PIC Pengunggah',
     tanggalUpload: new Date().toISOString().substring(0, 10),
     versi: 1,
     statusVerifikasi: 'Menunggu Verifikasi',
@@ -727,12 +930,15 @@ app.post('/api/documents/upload', upload.single('file'), (req: Request, res: Res
     namaFileAsli: file.originalname,
     lokasiPenyimpanan: file.path,
     ukuranFile: file.size,
-    tipeMime: file.mimetype,
+    tipeMime: file.mimetype || 'application/pdf',
     fileUrl: `/uploads/${file.filename}`,
     riwayatVersi: []
   };
 
   db.documents.unshift(newDoc);
+  if (proker) {
+    proker.terakhirDiperbarui = new Date().toISOString().substring(0, 10);
+  }
   saveDb();
   logAudit(body.userId, body.userName, body.userRole, 'UPLOAD_DOCUMENT', 'DOKUMEN', newDoc.id, `Mengunggah dokumen ${newDoc.jenisDokumen}: ${newDoc.nomorDokumen} (${file.originalname})`, req);
 
@@ -825,6 +1031,27 @@ app.delete('/api/documents/:id', (req: Request, res: Response) => {
 });
 
 // 4. Physical Progress CRUD
+app.get('/api/progress', (req: Request, res: Response) => {
+  const { prokerId, tahun, quarter } = req.query;
+  let records = db.progressRecords;
+
+  if (prokerId) {
+    records = records.filter(r => r.prokerId === prokerId);
+  }
+  if (tahun && tahun !== 'Semua') {
+    records = records.filter(r => {
+      if (r.tahunAnggaran) return r.tahunAnggaran.toString() === tahun.toString();
+      const p = db.workPrograms.find(wp => wp.id === r.prokerId);
+      return p && p.tahunAnggaran.toString() === tahun.toString();
+    });
+  }
+  if (quarter && quarter !== 'Semua') {
+    records = records.filter(r => r.quarter === quarter);
+  }
+
+  res.json(records);
+});
+
 app.get('/api/progress/:prokerId', (req: Request, res: Response) => {
   const records = db.progressRecords.filter(r => r.prokerId === req.params.prokerId);
   res.json(records);
@@ -832,21 +1059,52 @@ app.get('/api/progress/:prokerId', (req: Request, res: Response) => {
 
 app.post('/api/progress', (req: Request, res: Response) => {
   const body = req.body;
+  const targetProker = db.workPrograms.find(p => p.id === body.prokerId);
+  const targetYear = body.tahunAnggaran || targetProker?.tahunAnggaran || 2026;
+
+  // Determine Quarter & Week
+  let quarter: QuarterType = body.quarter as QuarterType;
+  let mingguKe = body.mingguKe ? parseInt(body.mingguKe) : undefined;
+
+  if (!quarter) {
+    if (mingguKe) {
+      if (mingguKe <= 13) quarter = 'Q1';
+      else if (mingguKe <= 26) quarter = 'Q2';
+      else if (mingguKe <= 39) quarter = 'Q3';
+      else quarter = 'Q4';
+    } else if (body.tanggalPelaporan) {
+      const monthNum = new Date(body.tanggalPelaporan).getMonth() + 1;
+      if (monthNum <= 3) quarter = 'Q1';
+      else if (monthNum <= 6) quarter = 'Q2';
+      else if (monthNum <= 9) quarter = 'Q3';
+      else quarter = 'Q4';
+    } else {
+      quarter = 'Q4';
+    }
+  }
+
+  const labelMinggu = body.labelMinggu || (mingguKe ? `W${mingguKe}` : 'W1');
+
   const newRecord: PhysicalProgressRecord = {
     id: 'PRG-' + Date.now(),
     prokerId: body.prokerId,
-    kodeProker: body.kodeProker || '',
-    periode: body.periode || 'Bulan Berjalan',
+    kodeProker: body.kodeProker || targetProker?.kodeProker || '',
+    periode: body.periode || `${labelMinggu} (${quarter})`,
+    quarter,
+    mingguKe: mingguKe || 1,
+    labelMinggu,
+    bulan: body.bulan || 'Oktober',
+    tahunAnggaran: targetYear,
     tanggalPelaporan: body.tanggalPelaporan || new Date().toISOString().substring(0, 10),
     targetProgres: parseFloat(body.targetProgres) || 0,
     realisasiProgres: parseFloat(body.realisasiProgres) || 0,
     selisih: (parseFloat(body.realisasiProgres) || 0) - (parseFloat(body.targetProgres) || 0),
     deskripsiPekerjaan: body.deskripsiPekerjaan || '',
-    kendala: body.kendala,
-    tindakLanjut: body.tindakLanjut,
-    buktiUrl: body.buktiUrl,
-    buktiNama: body.buktiNama,
-    picPelapor: body.picPelapor || 'PIC Proker',
+    kendala: body.kendala || '',
+    tindakLanjut: body.tindakLanjut || '',
+    buktiUrl: body.buktiUrl || '',
+    buktiNama: body.buktiNama || '',
+    picPelapor: body.picPelapor || body.userName || 'PIC Proker',
     statusVerifikasi: 'Terverifikasi'
   };
 
@@ -870,17 +1128,105 @@ app.post('/api/progress', (req: Request, res: Response) => {
     } else {
       db.workPrograms[prokerIndex].statusJadwal = 'Sesuai';
     }
+    db.workPrograms[prokerIndex].terakhirDiperbarui = new Date().toISOString().substring(0, 10);
   }
 
   saveDb();
-  logAudit(body.userId, body.userName, body.userRole, 'LOG_PROGRESS', 'PROGRES', newRecord.id, `Pencatatan progres fisik ${newRecord.kodeProker} sebesar ${newRecord.realisasiProgres}%`, req);
+  logAudit(body.userId, body.userName, body.userRole, 'LOG_PROGRESS', 'PROGRES', newRecord.id, `Pencatatan progres fisik ${newRecord.kodeProker} [${newRecord.labelMinggu} ${newRecord.quarter}]: Target ${newRecord.targetProgres}%, Realisasi ${newRecord.realisasiProgres}%`, req);
 
   res.status(201).json(newRecord);
 });
 
+app.put('/api/progress/:id', (req: Request, res: Response) => {
+  const index = db.progressRecords.findIndex(r => r.id === req.params.id);
+  if (index === -1) {
+    return res.status(404).json({ error: 'Data progres fisik tidak ditemukan' });
+  }
+
+  const existing = db.progressRecords[index];
+  const body = req.body;
+
+  const targetProgres = body.targetProgres !== undefined ? parseFloat(body.targetProgres) : existing.targetProgres;
+  const realisasiProgres = body.realisasiProgres !== undefined ? parseFloat(body.realisasiProgres) : existing.realisasiProgres;
+  const selisih = realisasiProgres - targetProgres;
+
+  const updated: PhysicalProgressRecord = {
+    ...existing,
+    periode: body.periode !== undefined ? body.periode : existing.periode,
+    quarter: body.quarter !== undefined ? body.quarter : existing.quarter,
+    mingguKe: body.mingguKe !== undefined ? parseInt(body.mingguKe) : existing.mingguKe,
+    labelMinggu: body.labelMinggu !== undefined ? body.labelMinggu : (body.mingguKe ? `W${body.mingguKe}` : existing.labelMinggu),
+    bulan: body.bulan !== undefined ? body.bulan : existing.bulan,
+    tahunAnggaran: body.tahunAnggaran !== undefined ? parseInt(body.tahunAnggaran) : existing.tahunAnggaran,
+    tanggalPelaporan: body.tanggalPelaporan !== undefined ? body.tanggalPelaporan : existing.tanggalPelaporan,
+    targetProgres,
+    realisasiProgres,
+    selisih,
+    deskripsiPekerjaan: body.deskripsiPekerjaan !== undefined ? body.deskripsiPekerjaan : existing.deskripsiPekerjaan,
+    kendala: body.kendala !== undefined ? body.kendala : existing.kendala,
+    tindakLanjut: body.tindakLanjut !== undefined ? body.tindakLanjut : existing.tindakLanjut,
+    buktiUrl: body.buktiUrl !== undefined ? body.buktiUrl : existing.buktiUrl,
+    buktiNama: body.buktiNama !== undefined ? body.buktiNama : existing.buktiNama,
+    picPelapor: body.picPelapor !== undefined ? body.picPelapor : existing.picPelapor
+  };
+
+  db.progressRecords[index] = updated;
+
+  // Re-sync latest progress to proker
+  const prokerIndex = db.workPrograms.findIndex(p => p.id === updated.prokerId);
+  if (prokerIndex !== -1) {
+    db.workPrograms[prokerIndex].progresFisik = updated.realisasiProgres;
+    db.workPrograms[prokerIndex].targetProgresFisik = updated.targetProgres;
+    if (updated.realisasiProgres >= 100) {
+      db.workPrograms[prokerIndex].statusProyek = 'Selesai';
+    } else if (updated.realisasiProgres > 0) {
+      db.workPrograms[prokerIndex].statusProyek = 'Proses';
+    }
+    if (updated.selisih < -5) {
+      db.workPrograms[prokerIndex].statusJadwal = 'Terlambat';
+    } else if (updated.selisih > 5) {
+      db.workPrograms[prokerIndex].statusJadwal = 'Terdepan';
+    } else {
+      db.workPrograms[prokerIndex].statusJadwal = 'Sesuai';
+    }
+    db.workPrograms[prokerIndex].terakhirDiperbarui = new Date().toISOString().substring(0, 10);
+  }
+
+  saveDb();
+  logAudit(body.userId, body.userName, body.userRole, 'UPDATE_PROGRESS', 'PROGRES', updated.id, `Memperbarui progres fisik ${updated.kodeProker} [${updated.labelMinggu || 'Mingguan'} ${updated.quarter || ''}]: Realisasi ${updated.realisasiProgres}%`, req);
+
+  res.json(updated);
+});
+
+app.delete('/api/progress/:id', (req: Request, res: Response) => {
+  const index = db.progressRecords.findIndex(r => r.id === req.params.id);
+  if (index === -1) {
+    return res.status(404).json({ error: 'Data progres fisik tidak ditemukan' });
+  }
+
+  const deleted = db.progressRecords[index];
+  db.progressRecords.splice(index, 1);
+
+  // If there are still records for this proker, sync to the latest remaining record
+  const remaining = db.progressRecords.filter(r => r.prokerId === deleted.prokerId);
+  const prokerIndex = db.workPrograms.findIndex(p => p.id === deleted.prokerId);
+  if (prokerIndex !== -1) {
+    if (remaining.length > 0) {
+      const latest = remaining[0];
+      db.workPrograms[prokerIndex].progresFisik = latest.realisasiProgres;
+      db.workPrograms[prokerIndex].targetProgresFisik = latest.targetProgres;
+    }
+  }
+
+  saveDb();
+  logAudit(req.body.userId, req.body.userName, req.body.userRole, 'DELETE_PROGRESS', 'PROGRES', deleted.id, `Menghapus catatan progres fisik ${deleted.kodeProker} periode ${deleted.periode}`, req);
+
+  res.json({ message: 'Catatan progres fisik berhasil dihapus' });
+});
+
 // 5. Budget Realizations CRUD
 app.get('/api/realizations', (req: Request, res: Response) => {
-  const { tahun, prokerId, status } = req.query;
+  const { tahun, prokerId, status, tipe, kategori } = req.query;
   let records = db.realizations;
   const prokerYearMap = new Map(db.workPrograms.map(p => [p.id, p.tahunAnggaran]));
 
@@ -897,42 +1243,62 @@ app.get('/api/realizations', (req: Request, res: Response) => {
   }
 
   if (prokerId && prokerId !== 'Semua') {
-    records = records.filter(r => r.prokerId === prokerId);
+    records = records.filter(r => r.prokerId === prokerId || r.kodeProker === prokerId);
   }
 
   if (status && status !== 'Semua') {
-    records = records.filter(r => r.statusPembayaran === status);
+    records = records.filter(r => r.statusPembayaran === status || r.statusOgp === status);
+  }
+
+  if (tipe && tipe !== 'Semua') {
+    records = records.filter(r => r.tipeRealisasi === tipe);
+  }
+
+  if (kategori && kategori !== 'Semua') {
+    records = records.filter(r => r.kategoriRealisasi === kategori);
   }
 
   res.json(records);
 });
 
 app.get('/api/realizations/:prokerId', (req: Request, res: Response) => {
-  const records = db.realizations.filter(r => r.prokerId === req.params.prokerId);
+  const records = db.realizations.filter(r => r.prokerId === req.params.prokerId || r.kodeProker === req.params.prokerId);
   res.json(records);
 });
 
 app.post('/api/realizations', (req: Request, res: Response) => {
   const body = req.body;
-  const prokerYear = db.workPrograms.find(p => p.id === body.prokerId)?.tahunAnggaran;
+  const targetProker = db.workPrograms.find(p => p.id === body.prokerId || p.kodeProker === body.kodeProker);
+  const prokerYear = targetProker?.tahunAnggaran;
   const resolvedYear = body.tahunAnggaran 
     ? parseInt(body.tahunAnggaran) 
     : (body.tglPosting ? new Date(body.tglPosting).getFullYear() : (prokerYear || 2026));
 
+  const classification = classifyRealization({
+    tipeRealisasi: body.tipeRealisasi,
+    statusOgp: body.statusOgp,
+    statusPembayaran: body.statusPembayaran,
+    noNde: body.noNde,
+    keteranganRelease: body.keteranganRelease
+  });
+
   const newRealization: BudgetRealizationRelease = {
     id: 'RLS-' + Date.now(),
-    prokerId: body.prokerId,
-    kodeProker: body.kodeProker || '',
+    prokerId: targetProker?.id || body.prokerId,
+    kodeProker: body.kodeProker || targetProker?.kodeProker || '',
     idRelease: body.idRelease || (db.realizations.length + 1).toString(),
     tglPosting: body.tglPosting || new Date().toISOString().substring(0, 10),
     kodeAset: body.kodeAset || 'Gedung Kantor',
     kodeRekening: body.kodeRekening || '1204010102',
     nomorDokumen: body.nomorDokumen || `${Date.now()}`,
     keteranganRelease: body.keteranganRelease || '',
-    noNde: body.noNde || 'ACCRUE',
+    noNde: body.noNde || (classification.tipeRealisasi === 'ACCRUE' ? 'ACCRUE' : 'NPP'),
+    tipeRealisasi: classification.tipeRealisasi,
+    statusOgp: classification.statusOgp,
+    kategoriRealisasi: classification.kategoriRealisasi,
     bsuRelease: parseFloat(body.bsuRelease) || 0,
     kodeSubproker: body.kodeSubproker || '',
-    statusPembayaran: body.statusPembayaran || 'Sudah di OGP',
+    statusPembayaran: classification.statusOgp,
     bsuAktual: parseFloat(body.bsuAktual) || 0,
     bulanAktual: body.bulanAktual || 'OKT',
     lokasiAset: body.lokasiAset || 'Kantor Pusat',
@@ -940,10 +1306,83 @@ app.post('/api/realizations', (req: Request, res: Response) => {
   };
 
   db.realizations.unshift(newRealization);
+  syncProkerFinancials(newRealization.prokerId);
   saveDb();
-  logAudit(body.userId, body.userName, body.userRole, 'CREATE_REALIZATION', 'REALISASI', newRealization.id, `Input realisasi BSU Rp ${newRealization.bsuAktual} untuk proker ${newRealization.kodeProker} (Tahun ${resolvedYear})`, req);
+  logAudit(body.userId, body.userName, body.userRole, 'CREATE_REALIZATION', 'REALISASI', newRealization.id, `Input realisasi [${newRealization.kategoriRealisasi}] BSU Rp ${newRealization.bsuAktual} untuk proker ${newRealization.kodeProker} (Tahun ${resolvedYear})`, req);
 
   res.status(201).json(newRealization);
+});
+
+app.put('/api/realizations/:id', (req: Request, res: Response) => {
+  const index = db.realizations.findIndex(r => r.id === req.params.id);
+  if (index === -1) {
+    return res.status(404).json({ error: 'Data realisasi tidak ditemukan' });
+  }
+
+  const existing = db.realizations[index];
+  const body = req.body;
+  const oldProkerId = existing.prokerId;
+
+  const prokerYear = body.prokerId ? db.workPrograms.find(p => p.id === body.prokerId)?.tahunAnggaran : undefined;
+  const resolvedYear = body.tahunAnggaran 
+    ? parseInt(body.tahunAnggaran) 
+    : (body.tglPosting ? new Date(body.tglPosting).getFullYear() : (prokerYear || existing.tahunAnggaran || 2026));
+
+  const classification = classifyRealization({
+    tipeRealisasi: body.tipeRealisasi !== undefined ? body.tipeRealisasi : existing.tipeRealisasi,
+    statusOgp: body.statusOgp !== undefined ? body.statusOgp : (body.statusPembayaran !== undefined ? body.statusPembayaran : existing.statusOgp),
+    statusPembayaran: body.statusPembayaran !== undefined ? body.statusPembayaran : existing.statusPembayaran,
+    noNde: body.noNde !== undefined ? body.noNde : existing.noNde,
+    keteranganRelease: body.keteranganRelease !== undefined ? body.keteranganRelease : existing.keteranganRelease
+  });
+
+  const updated: BudgetRealizationRelease = {
+    ...existing,
+    prokerId: body.prokerId !== undefined ? body.prokerId : existing.prokerId,
+    kodeProker: body.kodeProker !== undefined ? body.kodeProker : existing.kodeProker,
+    idRelease: body.idRelease !== undefined ? body.idRelease : existing.idRelease,
+    tglPosting: body.tglPosting !== undefined ? body.tglPosting : existing.tglPosting,
+    kodeAset: body.kodeAset !== undefined ? body.kodeAset : existing.kodeAset,
+    kodeRekening: body.kodeRekening !== undefined ? body.kodeRekening : existing.kodeRekening,
+    nomorDokumen: body.nomorDokumen !== undefined ? body.nomorDokumen : existing.nomorDokumen,
+    keteranganRelease: body.keteranganRelease !== undefined ? body.keteranganRelease : existing.keteranganRelease,
+    noNde: body.noNde !== undefined ? body.noNde : existing.noNde,
+    tipeRealisasi: classification.tipeRealisasi,
+    statusOgp: classification.statusOgp,
+    kategoriRealisasi: classification.kategoriRealisasi,
+    bsuRelease: body.bsuRelease !== undefined ? parseFloat(body.bsuRelease) : existing.bsuRelease,
+    kodeSubproker: body.kodeSubproker !== undefined ? body.kodeSubproker : existing.kodeSubproker,
+    statusPembayaran: classification.statusOgp,
+    bsuAktual: body.bsuAktual !== undefined ? parseFloat(body.bsuAktual) : existing.bsuAktual,
+    bulanAktual: body.bulanAktual !== undefined ? body.bulanAktual : existing.bulanAktual,
+    lokasiAset: body.lokasiAset !== undefined ? body.lokasiAset : existing.lokasiAset,
+    tahunAnggaran: resolvedYear
+  };
+
+  db.realizations[index] = updated;
+  syncProkerFinancials(updated.prokerId);
+  if (oldProkerId && oldProkerId !== updated.prokerId) {
+    syncProkerFinancials(oldProkerId);
+  }
+  saveDb();
+  logAudit(body.userId, body.userName, body.userRole, 'UPDATE_REALIZATION', 'REALISASI', updated.id, `Perbarui realisasi [${updated.kategoriRealisasi}] ID Release ${updated.idRelease} (${updated.kodeProker}) BSU Rp ${updated.bsuAktual}`, req);
+
+  res.json(updated);
+});
+
+app.delete('/api/realizations/:id', (req: Request, res: Response) => {
+  const index = db.realizations.findIndex(r => r.id === req.params.id);
+  if (index === -1) {
+    return res.status(404).json({ error: 'Data realisasi tidak ditemukan' });
+  }
+
+  const deleted = db.realizations[index];
+  db.realizations.splice(index, 1);
+  syncProkerFinancials(deleted.prokerId);
+  saveDb();
+  logAudit(req.body?.userId, req.body?.userName, req.body?.userRole, 'DELETE_REALIZATION', 'REALISASI', deleted.id, `Hapus realisasi ID Release ${deleted.idRelease} (${deleted.kodeProker})`, req);
+
+  res.json({ success: true, deletedId: req.params.id });
 });
 
 // 6. Financial Analysis FS-BC
@@ -1359,10 +1798,15 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.resolve(__dirname, 'dist');
+    const distPath = path.resolve(ROOT_DIR, 'dist');
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
+      const indexPath = path.join(distPath, 'index.html');
+      if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+      } else {
+        res.sendFile(path.resolve(ROOT_DIR, 'index.html'));
+      }
     });
   }
 

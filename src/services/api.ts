@@ -150,8 +150,15 @@ export const api = {
   },
 
   // Progress Records
-  async getProgressRecords(prokerId: string): Promise<PhysicalProgressRecord[]> {
-    const res = await fetch(`/api/progress/${prokerId}`);
+  async getProgressRecords(prokerId?: string, params?: { tahun?: string; quarter?: string }): Promise<PhysicalProgressRecord[]> {
+    const query = new URLSearchParams();
+    if (prokerId) query.set('prokerId', prokerId);
+    if (params?.tahun && params.tahun !== 'Semua') query.set('tahun', params.tahun);
+    if (params?.quarter && params.quarter !== 'Semua') query.set('quarter', params.quarter);
+
+    const queryString = query.toString();
+    const url = queryString ? `/api/progress?${queryString}` : '/api/progress';
+    const res = await fetch(url);
     if (!res.ok) throw new Error('Gagal memuat riwayat progres fisik');
     return res.json();
   },
@@ -164,6 +171,25 @@ export const api = {
     });
     if (!res.ok) throw new Error('Gagal mencatat progres fisik');
     return res.json();
+  },
+
+  async updateProgress(id: string, data: Partial<PhysicalProgressRecord>, currentUser: { id: string; name: string; role: string }): Promise<PhysicalProgressRecord> {
+    const res = await fetch(`/api/progress/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...data, userId: currentUser.id, userName: currentUser.name, userRole: currentUser.role })
+    });
+    if (!res.ok) throw new Error('Gagal memperbarui progres fisik');
+    return res.json();
+  },
+
+  async deleteProgress(id: string, currentUser: { id: string; name: string; role: string }): Promise<void> {
+    const res = await fetch(`/api/progress/${id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: currentUser.id, userName: currentUser.name, userRole: currentUser.role })
+    });
+    if (!res.ok) throw new Error('Gagal menghapus catatan progres fisik');
   },
 
   // Budget Realizations
@@ -191,6 +217,25 @@ export const api = {
     });
     if (!res.ok) throw new Error('Gagal menyimpan realisasi release');
     return res.json();
+  },
+
+  async updateRealization(id: string, data: Partial<BudgetRealizationRelease>, currentUser: { id: string; name: string; role: string }): Promise<BudgetRealizationRelease> {
+    const res = await fetch(`/api/realizations/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...data, userId: currentUser.id, userName: currentUser.name, userRole: currentUser.role })
+    });
+    if (!res.ok) throw new Error('Gagal memperbarui transaksi realisasi');
+    return res.json();
+  },
+
+  async deleteRealization(id: string, currentUser: { id: string; name: string; role: string }): Promise<void> {
+    const res = await fetch(`/api/realizations/${id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: currentUser.id, userName: currentUser.name, userRole: currentUser.role })
+    });
+    if (!res.ok) throw new Error('Gagal menghapus transaksi realisasi');
   },
 
   // Financial Analysis FS-BC

@@ -106,11 +106,18 @@ export interface DocumentChecklistSummary {
   completenessPercentage: number;
 }
 
+export type QuarterType = 'Q1' | 'Q2' | 'Q3' | 'Q4';
+
 export interface PhysicalProgressRecord {
   id: string;
   prokerId: string;
   kodeProker: string;
   periode: string; // e.g. "Minggu 4 - Okt 2026"
+  quarter?: QuarterType; // 'Q1' | 'Q2' | 'Q3' | 'Q4'
+  mingguKe?: number; // e.g. 1, 2, 3 ... 52
+  labelMinggu?: string; // e.g. "W1", "W2", "W3", ...
+  bulan?: string; // e.g. "Januari", "Februari", ...
+  tahunAnggaran?: number; // e.g. 2026
   tanggalPelaporan: string;
   targetProgres: number;
   realisasiProgres: number;
@@ -124,6 +131,10 @@ export interface PhysicalProgressRecord {
   statusVerifikasi: VerificationStatus;
 }
 
+export type RealisasiType = 'ACCRUE' | 'NPP';
+export type OgpStatus = 'Sudah di OGP' | 'Belum di OGP';
+export type KategoriRealisasi = 'Accrual' | 'NPP - Sudah di OGP' | 'NPP - Belum di OGP';
+
 export interface BudgetRealizationRelease {
   id: string;
   prokerId: string;
@@ -135,6 +146,9 @@ export interface BudgetRealizationRelease {
   nomorDokumen: string;
   keteranganRelease: string;
   noNde: string;
+  tipeRealisasi?: RealisasiType; // 'ACCRUE' | 'NPP'
+  statusOgp?: OgpStatus; // 'Sudah di OGP' | 'Belum di OGP'
+  kategoriRealisasi?: KategoriRealisasi; // 'Accrual' | 'NPP - Sudah di OGP' | 'NPP - Belum di OGP'
   bsuRelease: number;
   kodeSubproker: string;
   statusPembayaran: 'Sudah di OGP' | 'Belum di OGP' | 'Draft';
