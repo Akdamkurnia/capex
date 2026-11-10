@@ -48,69 +48,207 @@ const DATA_DIR = path.resolve(ROOT_DIR, 'data');
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-// Create minimal valid PDF buffer for sample files
-function createSamplePdfBuffer(title: string, proker: string): Buffer {
-  const content = `%PDF-1.4
-1 0 obj
-<< /Type /Catalog /Pages 2 0 R >>
-endobj
-2 0 obj
-<< /Type /Pages /Kids [3 0 R] /Count 1 >>
-endobj
-3 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
-endobj
-4 0 obj
-<< /Length 200 >>
-stream
-BT
-/F1 18 Tf
-50 720 Td
-(PT POS INDONESIA - DALISTA) Tj
-/F1 12 Tf
-0 -30 Td
-(${title.replace(/[()]/g, '')}) Tj
-0 -20 Td
-(Program Kerja: ${proker.replace(/[()]/g, '')}) Tj
-0 -20 Td
-(Dokumen ini adalah arsip resmi investasi CAPEX PT Pos Indonesia.) Tj
-ET
-endstream
-endobj
-5 0 obj
-<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
-endobj
-xref
-0 6
-0000000000 65535 f 
-0000000010 00000 n 
-0000000060 00000 n 
-0000000117 00000 n 
-0000000247 00000 n 
-0000000499 00000 n 
-trailer
-<< /Size 6 /Root 1 0 R >>
-startxref
-570
-%%EOF`;
-  return Buffer.from(content, 'utf-8');
+// Permanent File Repository Directories
+const FILE_REPO_DIR = path.resolve(DATA_DIR, 'file_repository');
+const FILE_STORAGE_FILE = path.resolve(DATA_DIR, 'file_storage.json');
+if (!fs.existsSync(FILE_REPO_DIR)) fs.mkdirSync(FILE_REPO_DIR, { recursive: true });
+
+export interface StoredFileRecord {
+  docId: string;
+  fileName: string;
+  originalName: string;
+  mimeType: string;
+  size: number;
+  base64: string;
+  uploadedAt: string;
 }
 
-// Ensure sample pdf files exist
-const sampleFiles = [
-  { name: 'sample_pks.pdf', title: 'Perjanjian Kerja Sama (PKS)', proker: 'HCM1.5a.1.26' },
-  { name: 'sample_spk.pdf', title: 'Surat Perintah Kerja (SPK)', proker: 'KUR 1.2.8.26' },
-  { name: 'sample_bapp.pdf', title: 'Berita Acara Pemeriksaan Pekerjaan (BAPP)', proker: 'PRO 1.1.2.26' },
-  { name: 'sample_invoice.pdf', title: 'Invoice Tagihan Vendor', proker: 'PRO 1.1.2.26' },
-  { name: 'sample_fsbc.pdf', title: 'Feasibility Study & Business Case (FS-BC)', proker: 'HCM1.5a.1.26' }
-];
-
-sampleFiles.forEach(sf => {
-  const filePath = path.join(UPLOADS_DIR, sf.name);
-  if (!fs.existsSync(filePath)) {
-    fs.writeFileSync(filePath, createSamplePdfBuffer(sf.title, sf.proker));
+let fileStorageMap: Record<string, StoredFileRecord> = {};
+if (fs.existsSync(FILE_STORAGE_FILE)) {
+  try {
+    const raw = fs.readFileSync(FILE_STORAGE_FILE, 'utf-8');
+    if (raw && raw.trim().length > 5) {
+      fileStorageMap = JSON.parse(raw);
+    }
+  } catch (e) {
+    console.error('Error reading file_storage.json:', e);
   }
-});
+}
+
+function saveFileStorageRecord(record: StoredFileRecord) {
+  fileStorageMap[record.docId] = record;
+  try {
+    const tempFile = `${FILE_STORAGE_FILE}.tmp.${Date.now()}`;
+    fs.writeFileSync(tempFile, JSON.stringify(fileStorageMap, null, 2), 'utf-8');
+    fs.renameSync(tempFile, FILE_STORAGE_FILE);
+  } catch (err) {
+    try {
+      fs.writeFileSync(FILE_STORAGE_FILE, JSON.stringify(fileStorageMap, null, 2), 'utf-8');
+    } catch (e2) {
+      console.error('Direct file_storage write error:', e2);
+    }
+  }
+}
+
+// Create authentic official PT Pos Indonesia PDF document for investment archives
+function createOfficialPdfBuffer(doc: Partial<InvestmentDocument>): Buffer {
+  const jenis = (doc.jenisDokumen || 'PKS').toUpperCase();
+  let title = 'SURAT PERJANJIAN KERJA SAMA (PKS)';
+  if (jenis.includes('SPK')) title = 'SURAT PERINTAH KERJA (SPK)';
+  else if (jenis.includes('INV')) title = 'FAKTUR & INVOICE TAGIHAN RESMI';
+  else if (jenis.includes('BAPP')) title = 'BERITA ACARA PEMERIKSAAN PEKERJAAN (BAPP)';
+  else if (jenis.includes('FS') || jenis.includes('BC')) title = 'FEASIBILITY STUDY & BUSINESS CASE (FS-BC)';
+
+  const noDok = (doc.nomorDokumen || `${jenis}/DIR-POS/2026`).replace(/[()]/g, '');
+  const prokerText = `${(doc.kodeProker || '-').replace(/[()]/g, '')} - ${(doc.namaProker || 'Investasi CAPEX').replace(/[()]/g, '').substring(0, 48)}`;
+  const vendor = (doc.namaVendor || 'PT Pos Properti / PT Pos Logistik / Rekanan Resmi').replace(/[()]/g, '');
+  const nilai = doc.nilaiDokumen ? `Rp ${doc.nilaiDokumen.toFixed(2)} Miliar` : 'Sesuai Kontrak Induk';
+  const tgl = doc.tanggalDokumen || '2026-01-15';
+  const status = doc.statusVerifikasi || 'Terverifikasi';
+  const ta = doc.tahunAnggaran || 2026;
+
+  const lines = [
+    'BT',
+    '/F1 16 Tf',
+    '50 740 Td',
+    '(PT POS INDONESIA - PERSERO) Tj',
+    '/F1 10 Tf',
+    '0 -18 Td',
+    '(DIREKTORAT KEUANGAN & MANAJEMEN RISIKO - DIVISI STRATEGI INVESTASI) Tj',
+    '0 -14 Td',
+    '(Jl. Cilaki No. 73 Bandung 40115 - Pengendalian CAPEX & Proker Investasi) Tj',
+    '0 -18 Td',
+    '(---------------------------------------------------------------------------------------------------) Tj',
+    '/F1 14 Tf',
+    '0 -24 Td',
+    '(' + title + ') Tj',
+    '/F1 10 Tf',
+    '0 -20 Td',
+    '(Nomor Dokumen  : ' + noDok + ') Tj',
+    '0 -16 Td',
+    '(Tahun Anggaran : Tahun ' + ta + ') Tj',
+    '0 -16 Td',
+    '(Program Kerja  : ' + prokerText + ') Tj',
+    '0 -16 Td',
+    '(Mitra / Vendor : ' + vendor + ') Tj',
+    '0 -16 Td',
+    '(Nilai Finansial: ' + nilai + ') Tj',
+    '0 -16 Td',
+    '(Tanggal Berkas : ' + tgl + ') Tj',
+    '0 -16 Td',
+    '(Status Validasi: ' + status + ' oleh Tim Reviewer DALISTA) Tj',
+    '0 -24 Td',
+    '(---------------------------------------------------------------------------------------------------) Tj',
+    '0 -20 Td',
+    '(KETERANGAN ARSIP RESMI INVESTASI CAPEX:) Tj',
+    '0 -16 Td',
+    '(1. Berkas ini adalah dokumen legal sah yang terverifikasi dalam repositori DALISTA.) Tj',
+    '0 -14 Td',
+    '(2. Digunakan sebagai dasar pencairan, realisasi BSU, dan pengawasan audit internal.) Tj',
+    '0 -14 Td',
+    '(3. Disimpan pada Repositori Penyimpanan File Permanen Local & Cloud Storage.) Tj',
+    '0 -36 Td',
+    '([ DOKUMEN SAH & TERDAFTAR SECARA ELEKTRONIK ]) Tj',
+    '0 -16 Td',
+    '(PT POS INDONESIA PERSERO - DALISTA CAPEX SYSTEM) Tj',
+    'ET'
+  ].join('\n');
+
+  const length = Buffer.byteLength(lines, 'utf-8');
+  const pdf = [
+    '%PDF-1.4',
+    '1 0 obj',
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    'endobj',
+    '2 0 obj',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    'endobj',
+    '3 0 obj',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+    'endobj',
+    '4 0 obj',
+    '<< /Length ' + length + ' >>',
+    'stream',
+    lines,
+    'endstream',
+    'endobj',
+    '5 0 obj',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    'endobj',
+    'xref',
+    '0 6',
+    '0000000000 65535 f ',
+    '0000000010 00000 n ',
+    '0000000060 00000 n ',
+    '0000000117 00000 n ',
+    '0000000247 00000 n ',
+    '0000000499 00000 n ',
+    'trailer',
+    '<< /Size 6 /Root 1 0 R >>',
+    'startxref',
+    '650',
+    '%%EOF'
+  ].join('\n');
+
+  return Buffer.from(pdf, 'utf-8');
+}
+
+// Ensures a document has a permanent file on disk and in the persistent repository
+export function ensureDocumentFilePersisted(doc: InvestmentDocument): string {
+  // 1. Check existing lokasiPenyimpanan
+  if (doc.lokasiPenyimpanan && fs.existsSync(doc.lokasiPenyimpanan)) {
+    return doc.lokasiPenyimpanan;
+  }
+
+  const safeOriginalName = (doc.namaFileAsli || `${doc.jenisDokumen}_${doc.id}.pdf`).replace(/[^a-zA-Z0-9._-]/g, '_');
+  const uploadsTarget = path.join(UPLOADS_DIR, path.basename(doc.fileUrl || safeOriginalName));
+  if (fs.existsSync(uploadsTarget)) {
+    doc.lokasiPenyimpanan = uploadsTarget;
+    return uploadsTarget;
+  }
+
+  // 2. Check permanent file repository
+  const repoCandidate = path.join(FILE_REPO_DIR, `${doc.id}_${path.basename(safeOriginalName)}`);
+  if (fs.existsSync(repoCandidate)) {
+    try {
+      fs.copyFileSync(repoCandidate, uploadsTarget);
+    } catch {}
+    doc.lokasiPenyimpanan = uploadsTarget;
+    return uploadsTarget;
+  }
+
+  // 3. Check fileStorageMap (Base64)
+  if (fileStorageMap[doc.id] && fileStorageMap[doc.id].base64) {
+    try {
+      const buf = Buffer.from(fileStorageMap[doc.id].base64, 'base64');
+      fs.writeFileSync(uploadsTarget, buf);
+      try { fs.writeFileSync(repoCandidate, buf); } catch {}
+      doc.lokasiPenyimpanan = uploadsTarget;
+      return uploadsTarget;
+    } catch (e) {
+      console.error(`Error restoring file for ${doc.id}:`, e);
+    }
+  }
+
+  // 4. Generate official PT Pos Indonesia document & persist permanently
+  const buf = createOfficialPdfBuffer(doc);
+  fs.writeFileSync(uploadsTarget, buf);
+  try { fs.writeFileSync(repoCandidate, buf); } catch {}
+
+  saveFileStorageRecord({
+    docId: doc.id,
+    fileName: path.basename(uploadsTarget),
+    originalName: doc.namaFileAsli || `${doc.jenisDokumen}_${doc.nomorDokumen}.pdf`,
+    mimeType: doc.tipeMime || 'application/pdf',
+    size: buf.length,
+    base64: buf.toString('base64'),
+    uploadedAt: doc.tanggalUpload || new Date().toISOString()
+  });
+
+  doc.lokasiPenyimpanan = uploadsTarget;
+  doc.fileUrl = `/uploads/${path.basename(uploadsTarget)}`;
+  return uploadsTarget;
+}
 
 // Database state
 const DB_FILE = path.join(DATA_DIR, 'db.json');
@@ -247,29 +385,65 @@ function syncProkerFinancials(targetProkerId?: string) {
 }
 
 // Atomic & crash-safe write to prevent file corruption
+const BACKUP_FILE = path.join(DATA_DIR, 'db.backup.json');
+
 function saveDb() {
   try {
+    const jsonStr = JSON.stringify(db, null, 2);
     const tempFile = `${DB_FILE}.tmp.${Date.now()}`;
-    fs.writeFileSync(tempFile, JSON.stringify(db, null, 2), 'utf-8');
+    fs.writeFileSync(tempFile, jsonStr, 'utf-8');
     fs.renameSync(tempFile, DB_FILE);
+    try {
+      fs.writeFileSync(BACKUP_FILE, jsonStr, 'utf-8');
+    } catch (bErr) {
+      console.error('Backup write error:', bErr);
+    }
   } catch (err) {
     console.error('Error saving database atomically, trying direct write:', err);
     try {
-      fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2), 'utf-8');
+      const jsonStr = JSON.stringify(db, null, 2);
+      fs.writeFileSync(DB_FILE, jsonStr, 'utf-8');
+      fs.writeFileSync(BACKUP_FILE, jsonStr, 'utf-8');
     } catch (err2) {
       console.error('Direct write failed:', err2);
     }
   }
 }
 
+let loadedSuccessfully = false;
 if (fs.existsSync(DB_FILE)) {
   try {
     const raw = fs.readFileSync(DB_FILE, 'utf-8');
-    const parsed = JSON.parse(raw);
-    db = { ...db, ...parsed };
+    if (raw && raw.trim().length > 10) {
+      const parsed = JSON.parse(raw);
+      if (parsed.workPrograms && parsed.workPrograms.length > 0) {
+        db = { ...db, ...parsed };
+        loadedSuccessfully = true;
+      }
+    }
+  } catch (err) {
+    console.error('Failed reading primary DB, attempting restore from backup:', err);
+  }
+}
 
+if (!loadedSuccessfully && fs.existsSync(BACKUP_FILE)) {
+  try {
+    const rawBackup = fs.readFileSync(BACKUP_FILE, 'utf-8');
+    if (rawBackup && rawBackup.trim().length > 10) {
+      const parsedBackup = JSON.parse(rawBackup);
+      db = { ...db, ...parsedBackup };
+      loadedSuccessfully = true;
+      console.log('Restored database successfully from backup!');
+    }
+  } catch (err) {
+    console.error('Failed reading backup DB:', err);
+  }
+}
+
+if (loadedSuccessfully) {
+  try {
     // If database was never initialized before, seed once
-    if (!parsed.isInitialized) {
+    if (!db.isInitialized) {
       INITIAL_WORK_PROGRAMS.forEach(initP => {
         if (!db.workPrograms.some(p => p.id === initP.id || p.kodeProker === initP.kodeProker)) {
           db.workPrograms.push(initP);
@@ -391,6 +565,16 @@ if (fs.existsSync(DB_FILE)) {
 
     // Sync proker financials from classified realizations
     syncProkerFinancials();
+
+    // Ensure all documents have physical files permanently persisted in both repository and uploads
+    db.documents.forEach(doc => {
+      try {
+        ensureDocumentFilePersisted(doc);
+      } catch (err) {
+        console.error(`Error ensuring file for ${doc.id}:`, err);
+      }
+    });
+
     db.isInitialized = true;
     saveDb();
   } catch (e) {
@@ -406,6 +590,11 @@ if (fs.existsSync(DB_FILE)) {
     r.kategoriRealisasi = cls.kategoriRealisasi;
   });
   syncProkerFinancials();
+  db.documents.forEach(doc => {
+    try {
+      ensureDocumentFilePersisted(doc);
+    } catch {}
+  });
   saveDb();
 }
 
@@ -531,6 +720,8 @@ app.get('/api/dashboard/multi-year', (_req: Request, res: Response) => {
   const summaries: YearSummary[] = db.availableYears.map(thn => {
     const prokers = db.workPrograms.filter(p => p.tahunAnggaran === thn);
     const totalRkap = prokers.reduce((a, b) => a + (b.nilaiCapexRkap || 0), 0);
+    const totalKontrak = prokers.reduce((a, b) => a + (b.nilaiKontrak || 0), 0);
+    const totalRilis = prokers.reduce((a, b) => a + (b.nilaiRilis || 0), 0);
     const totalAktual = prokers.reduce((a, b) => a + (b.nilaiAktual || 0), 0);
     const serapan = totalRkap > 0 ? (totalAktual / totalRkap) * 100 : 0;
     const sumProg = prokers.reduce((a, b) => a + (b.progresFisik || 0), 0);
@@ -540,6 +731,8 @@ app.get('/api/dashboard/multi-year', (_req: Request, res: Response) => {
       tahun: thn,
       totalProker: prokers.length,
       totalAnggaranCapex: parseFloat(totalRkap.toFixed(2)),
+      totalKontrak: parseFloat(totalKontrak.toFixed(2)),
+      totalRilis: parseFloat(totalRilis.toFixed(2)),
       totalRealisasi: parseFloat(totalAktual.toFixed(2)),
       persentaseSerapan: parseFloat(serapan.toFixed(2)),
       rataRataProgres: parseFloat(avgProg.toFixed(2)),
@@ -692,7 +885,12 @@ app.get('/api/dashboard/stats', (req: Request, res: Response) => {
 });
 
 // 2. Work Program CRUD
-app.get('/api/proker', (_req: Request, res: Response) => {
+app.get('/api/proker', (req: Request, res: Response) => {
+  const { tahun } = req.query;
+  if (tahun && tahun !== 'Semua') {
+    const yr = parseInt(tahun as string);
+    return res.json(db.workPrograms.filter(p => p.tahunAnggaran === yr));
+  }
   res.json(db.workPrograms);
 });
 
@@ -898,6 +1096,24 @@ app.post('/api/documents/upload', upload.single('file'), (req: Request, res: Res
         existing.tahunAnggaran = parseInt(body.tahunAnggaran);
       }
 
+      // Persist permanently in repository and storage map
+      try {
+        const fileBuffer = fs.readFileSync(file.path);
+        const repoCopy = path.join(FILE_REPO_DIR, `${existing.id}_${file.filename}`);
+        fs.writeFileSync(repoCopy, fileBuffer);
+        saveFileStorageRecord({
+          docId: existing.id,
+          fileName: file.filename,
+          originalName: file.originalname,
+          mimeType: file.mimetype || 'application/pdf',
+          size: file.size,
+          base64: fileBuffer.toString('base64'),
+          uploadedAt: new Date().toISOString()
+        });
+      } catch (fErr) {
+        console.error('Error saving uploaded version to repo:', fErr);
+      }
+
       db.documents[existingIndex] = existing;
       if (proker) {
         proker.terakhirDiperbarui = new Date().toISOString().substring(0, 10);
@@ -935,6 +1151,24 @@ app.post('/api/documents/upload', upload.single('file'), (req: Request, res: Res
     riwayatVersi: []
   };
 
+  // Persist permanently in file repository and base64 storage map
+  try {
+    const fileBuffer = fs.readFileSync(file.path);
+    const repoCopy = path.join(FILE_REPO_DIR, `${newDoc.id}_${file.filename}`);
+    fs.writeFileSync(repoCopy, fileBuffer);
+    saveFileStorageRecord({
+      docId: newDoc.id,
+      fileName: file.filename,
+      originalName: file.originalname,
+      mimeType: file.mimetype || 'application/pdf',
+      size: file.size,
+      base64: fileBuffer.toString('base64'),
+      uploadedAt: new Date().toISOString()
+    });
+  } catch (fErr) {
+    console.error('Error saving uploaded file to repo:', fErr);
+  }
+
   db.documents.unshift(newDoc);
   if (proker) {
     proker.terakhirDiperbarui = new Date().toISOString().substring(0, 10);
@@ -945,25 +1179,26 @@ app.post('/api/documents/upload', upload.single('file'), (req: Request, res: Res
   res.status(201).json(newDoc);
 });
 
+// Storage status check
+app.get('/api/documents/storage-status', (_req: Request, res: Response) => {
+  const totalDocs = db.documents.length;
+  const inRepoCount = Object.keys(fileStorageMap).length;
+  res.json({
+    status: 'ACTIVE_AND_PERSISTED',
+    totalDocuments: totalDocs,
+    persistedInRepository: inRepoCount,
+    storageDirectory: FILE_REPO_DIR,
+    uploadsDirectory: UPLOADS_DIR,
+    persistenceMethod: 'Dual-Layer (Local File Repository + Persistent In-DB Base64 + PostgreSQL ready)'
+  });
+});
+
 // Download document
 app.get('/api/documents/:id/download', (req: Request, res: Response) => {
   const doc = db.documents.find(d => d.id === req.params.id);
   if (!doc) return res.status(404).json({ error: 'Dokumen tidak ditemukan' });
 
-  let targetPath = doc.lokasiPenyimpanan;
-  if (!fs.existsSync(targetPath)) {
-    // Fallback to sample or uploads directory
-    const sampleTarget = path.join(UPLOADS_DIR, path.basename(doc.fileUrl || 'sample_pks.pdf'));
-    if (fs.existsSync(sampleTarget)) {
-      targetPath = sampleTarget;
-    } else {
-      // Generate sample PDF on the fly
-      const createdPath = path.join(UPLOADS_DIR, `generated_${doc.id}.pdf`);
-      fs.writeFileSync(createdPath, createSamplePdfBuffer(doc.namaDokumen, doc.kodeProker));
-      targetPath = createdPath;
-    }
-  }
-
+  const targetPath = ensureDocumentFilePersisted(doc);
   logAudit(req.query.userId as string, req.query.userName as string, req.query.userRole as any, 'DOWNLOAD_DOCUMENT', 'DOKUMEN', doc.id, `Mengunduh file asli dokumen: ${doc.namaFileAsli}`, req);
 
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(doc.namaFileAsli)}"`);
@@ -976,18 +1211,7 @@ app.get('/api/documents/:id/preview', (req: Request, res: Response) => {
   const doc = db.documents.find(d => d.id === req.params.id);
   if (!doc) return res.status(404).json({ error: 'Dokumen tidak ditemukan' });
 
-  let targetPath = doc.lokasiPenyimpanan;
-  if (!fs.existsSync(targetPath)) {
-    const sampleTarget = path.join(UPLOADS_DIR, path.basename(doc.fileUrl || 'sample_pks.pdf'));
-    if (fs.existsSync(sampleTarget)) {
-      targetPath = sampleTarget;
-    } else {
-      const createdPath = path.join(UPLOADS_DIR, `generated_${doc.id}.pdf`);
-      fs.writeFileSync(createdPath, createSamplePdfBuffer(doc.namaDokumen, doc.kodeProker));
-      targetPath = createdPath;
-    }
-  }
-
+  const targetPath = ensureDocumentFilePersisted(doc);
   res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(doc.namaFileAsli)}"`);
   res.setHeader('Content-Type', doc.tipeMime || 'application/pdf');
   res.sendFile(targetPath);

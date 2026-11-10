@@ -717,10 +717,16 @@ export const ProgramKerjaView: React.FC<ProgramKerjaViewProps> = ({
                         <div className="font-semibold text-slate-100 line-clamp-2">
                           {p.namaProker}
                         </div>
-                        <div className="text-[10px] text-slate-400 flex items-center gap-1.5 mt-0.5">
+                        <div className="text-[10px] text-slate-400 flex flex-wrap items-center gap-1.5 mt-0.5">
                           <span className="px-1.5 py-0.2 bg-slate-800 rounded font-mono">BOSIE: {p.jenisBosie}</span>
                           <span>·</span>
                           <span>PIC: {p.ownerPic}</span>
+                          {p.keteranganPpk && (
+                            <>
+                              <span>·</span>
+                              <span className="text-amber-300/80 font-medium">PPK: {p.keteranganPpk}</span>
+                            </>
+                          )}
                         </div>
                       </td>
                       <td className="py-3 px-3 text-slate-300 whitespace-nowrap text-[11px] max-w-[150px] truncate">

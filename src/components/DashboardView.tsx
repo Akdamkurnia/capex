@@ -115,7 +115,32 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     .filter(p => p.statusJadwal === 'Terlambat' || p.progresFisik < p.targetProgresFisik - 5)
     .slice(0, 5);
 
-  // Pemisahan Realisasi Aktual CAPEX: Accrual vs NPP Sudah di OGP vs NPP Belum di OGP
+  // Ringkasan Realisasi per Tahun (Bukan Total)
+  const yearlyRealizationList = useMemo(() => {
+    const years = [...availableYears].filter(y => y >= 2023).sort((a, b) => b - a);
+    return years.map(yr => {
+      const prokers = workPrograms.filter(p => p.tahunAnggaran === yr);
+      const rkap = prokers.reduce((s, p) => s + (p.nilaiCapexRkap || 0), 0);
+      const kontrak = prokers.reduce((s, p) => s + (p.nilaiKontrak || 0), 0);
+      const rilis = prokers.reduce((s, p) => s + (p.nilaiRilis || 0), 0);
+      const aktual = prokers.reduce((s, p) => s + (p.nilaiAktual || 0), 0);
+      const serapan = rkap > 0 ? (aktual / rkap) * 100 : 0;
+      const sumProg = prokers.reduce((s, p) => s + (p.progresFisik || 0), 0);
+      const avgProg = prokers.length > 0 ? sumProg / prokers.length : 0;
+      return {
+        tahun: yr,
+        totalProker: prokers.length,
+        rkap: parseFloat(rkap.toFixed(2)),
+        kontrak: parseFloat(kontrak.toFixed(2)),
+        rilis: parseFloat(rilis.toFixed(2)),
+        aktual: parseFloat(aktual.toFixed(2)),
+        serapan: parseFloat(serapan.toFixed(2)),
+        avgProg: parseFloat(avgProg.toFixed(2))
+      };
+    });
+  }, [workPrograms, availableYears]);
+
+  // Pemisahan Realisasi Aktual CAPEX: Accrual vs NPP Sudah di OGP vs NPP Belum di OGP per Tahun
   const financialBreakdown = useMemo(() => {
     let accrual = 0;
     let nppSudahOgp = 0;
@@ -123,7 +148,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     let totalAktual = 0;
     let sisaAccrue = 0;
 
-    workPrograms.forEach((p) => {
+    const list = selectedYear && selectedYear !== 'Semua'
+      ? workPrograms.filter(p => p.tahunAnggaran.toString() === selectedYear.toString())
+      : workPrograms;
+
+    list.forEach((p) => {
       accrual += p.nilaiAccrue || 0;
       nppSudahOgp += p.nilaiOgp || 0;
       nppBelumOgp += p.belumOgp || 0;
@@ -145,7 +174,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       sudahOgpPct,
       belumOgpPct
     };
-  }, [workPrograms]);
+  }, [workPrograms, selectedYear]);
 
   return (
     <div className="space-y-6">
@@ -231,6 +260,119 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
         <div className="text-slate-400 text-[11px] font-mono">
           Aktif: <strong className="text-white">{selectedYear === 'Semua' ? 'Seluruh Tahun' : `TA ${selectedYear}`}</strong> ({workPrograms.length} Proker Tersedia)
+        </div>
+      </div>
+
+      {/* Ringkasan Realisasi per Tahun (Sesuai Permintaan: Jangan Ditotal) */}
+      <div className="bg-[#111e3f] border border-[#203463] rounded-2xl p-4 shadow-xl space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#1c2c54] pb-2.5">
+          <div className="flex items-center gap-2">
+            <span className="p-1.5 rounded-lg bg-orange-500/10 text-orange-400 border border-orange-500/20">
+              <BarChart3 className="w-4 h-4" />
+            </span>
+            <div>
+              <h4 className="text-xs font-bold text-white tracking-tight flex items-center gap-2">
+                <span>Realisasi Program Kerja Investasi per Tahun (Disajikan Terpisah, Bukan Total)</span>
+              </h4>
+              <p className="text-[10px] text-slate-400 mt-0.5">
+                Rincian angka resmi RKAP, Kontrak Pengadaan, Rilis BSU, dan Aktual Penyerapan per masing-masing Tahun Anggaran
+              </p>
+            </div>
+          </div>
+          <div className="text-[11px] text-slate-400 font-mono">
+            Klik kartu tahun untuk memfilter seluruh modul ke tahun tersebut
+          </div>
+        </div>
+
+        {/* Grid Kartu per Tahun */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+          {yearlyRealizationList.map((y) => {
+            const isSelected = selectedYear === y.tahun.toString();
+            return (
+              <div
+                key={y.tahun}
+                onClick={() => {
+                  onSelectYear(y.tahun.toString());
+                  setDashboardMode('single');
+                }}
+                className={`relative rounded-xl p-4 cursor-pointer transition-all border ${
+                  isSelected
+                    ? 'bg-gradient-to-b from-[#18294e] to-[#122040] border-orange-500 shadow-lg shadow-orange-500/10 ring-1 ring-orange-500/50'
+                    : 'bg-[#0c162e] border-[#1e325c] hover:border-slate-500 hover:bg-[#132242]'
+                }`}
+              >
+                {/* Year Header & Badge */}
+                <div className="flex items-center justify-between mb-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-extrabold text-white font-mono">
+                      TA {y.tahun}
+                    </span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono">
+                      {y.totalProker} Proker
+                    </span>
+                  </div>
+                  {isSelected ? (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-bold flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      Aktif
+                    </span>
+                  ) : (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#18294e] text-slate-400 hover:text-white font-medium">
+                      Pilih &rarr;
+                    </span>
+                  )}
+                </div>
+
+                {/* 4 Financial Lines */}
+                <div className="space-y-1.5 text-[11px] font-mono border-t border-[#1a2b52] pt-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">RKAP:</span>
+                    <span className="text-white font-bold tabular-nums">Rp {y.rkap.toFixed(2)} M</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">Kontrak:</span>
+                    <span className="text-cyan-300 font-semibold tabular-nums">Rp {y.kontrak.toFixed(2)} M</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">Rilis BSU:</span>
+                    <span className="text-blue-300 font-semibold tabular-nums">Rp {y.rilis.toFixed(2)} M</span>
+                  </div>
+                  <div className="flex justify-between items-center bg-[#070e1e] px-2 py-1 rounded">
+                    <span className="text-amber-300 font-bold">Aktual:</span>
+                    <span className="text-amber-400 font-extrabold tabular-nums">Rp {y.aktual.toFixed(2)} M</span>
+                  </div>
+                </div>
+
+                {/* Serapan Bar */}
+                <div className="mt-3 pt-2 border-t border-[#1a2b52]/60">
+                  <div className="flex justify-between items-center text-[10px] mb-1">
+                    <span className="text-slate-400">Serapan Anggaran</span>
+                    <span className={`font-mono font-bold ${
+                      y.serapan > 80 ? 'text-emerald-400' : y.serapan > 30 ? 'text-amber-400' : 'text-orange-400'
+                    }`}>
+                      {y.serapan.toFixed(2)}%
+                    </span>
+                  </div>
+                  <div className="w-full bg-[#070e1e] h-2 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full transition-all duration-500 rounded-full ${
+                        y.serapan > 80
+                          ? 'bg-gradient-to-r from-emerald-500 to-teal-400'
+                          : y.serapan > 30
+                          ? 'bg-gradient-to-r from-amber-500 to-yellow-400'
+                          : 'bg-gradient-to-r from-orange-500 to-amber-500'
+                      }`}
+                      style={{ width: `${Math.min(y.serapan, 100)}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[9px] text-slate-500 mt-1 font-mono">
+                    <span>Fisik: {y.avgProg.toFixed(1)}%</span>
+                    <span>{isSelected ? 'Sedang Ditampilkan' : 'Klik untuk Buka'}</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 

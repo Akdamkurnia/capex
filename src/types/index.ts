@@ -28,6 +28,7 @@ export interface WorkProgram {
   divisiUnitKerja: string;
   ownerPic: string;
   ownerCategory: OwnerType;
+  keteranganPpk?: string;
   namaPekerjaan: string;
   latarBelakang: string;
   tujuanInvestasi: string;
@@ -275,6 +276,8 @@ export interface YearSummary {
   tahun: number;
   totalProker: number;
   totalAnggaranCapex: number;
+  totalKontrak?: number;
+  totalRilis?: number;
   totalRealisasi: number;
   persentaseSerapan: number;
   rataRataProgres: number;
@@ -282,4 +285,5 @@ export interface YearSummary {
   prokerProses: number;
   prokerBelumMulai: number;
 }
+
 

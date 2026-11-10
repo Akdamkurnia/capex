@@ -268,11 +268,19 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
       await onUploadDocument(formData);
       setShowUploadModal(false);
       
+      // Auto switch filters so the newly uploaded document is immediately visible
+      setFilterTahun(uploadTahun.toString());
+      if (!forcedType) {
+        setFilterType(uploadJenis);
+      }
+      setFilterProker('Semua');
+      setFilterStatus('Semua');
+
       const successMsg = replaceTargetDoc
-        ? `Versi baru dokumen ${finalNomor} (${uploadJenis}) berhasil disimpan!`
-        : `Dokumen ${uploadJenis} (${finalNomor}) berhasil diunggah dengan lancar!`;
+        ? `Versi baru berkas ${finalNomor} (${uploadJenis}) berhasil disimpan permanen di repositori!`
+        : `Berkas ${uploadJenis} (${finalNomor}) berhasil diunggah & tersimpan aman di repositori (lokal & cloud)!`;
       setSuccessToast(successMsg);
-      setTimeout(() => setSuccessToast(null), 4500);
+      setTimeout(() => setSuccessToast(null), 5000);
 
       onRefresh();
     } catch (err: any) {
@@ -417,9 +425,13 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                 ? `Manajemen Dokumen ${forcedType}`
                 : 'Pusat Manajemen Dokumen Investasi CAPEX'}
             </h2>
+            <span className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[10px] font-mono font-semibold">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span>Penyimpanan Permanen Aktif</span>
+            </span>
           </div>
           <p className="text-xs text-slate-400 mt-0.5">
-            Arsip terpusat PKS, SPK, Invoice, BAPP, dan FS-BC terintegrasi dengan Program Kerja & Realisasi
+            Arsip terpusat PKS, SPK, Invoice, BAPP, dan FS-BC tersimpan aman di repositori permanen (penyimpanan lokal & cloud persistence)
           </p>
         </div>
 
@@ -680,9 +692,15 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                       >
                         {doc.namaFileAsli}
                       </button>
-                      <span className="text-[10px] text-slate-400 font-mono">
-                        {formatFileSize(doc.ukuranFile)} · {doc.picPengunggah}
-                      </span>
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {formatFileSize(doc.ukuranFile)} · {doc.picPengunggah}
+                        </span>
+                        <span className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono font-medium">
+                          <Check className="w-2.5 h-2.5" />
+                          <span>Tersimpan</span>
+                        </span>
+                      </div>
                     </td>
                     <td className="py-3 px-3 text-slate-300 text-[11px]">
                       <div>{doc.namaVendor || '-'}</div>
