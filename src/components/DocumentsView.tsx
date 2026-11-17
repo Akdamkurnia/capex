@@ -25,10 +25,25 @@ import {
   Layers,
   Sparkles,
   FileUp,
-  Check
+  Check,
+  Cloud,
+  Database,
+  ShieldAlert,
+  Github,
+  FolderGit2,
+  ExternalLink,
+  UploadCloud
 } from 'lucide-react';
-import { InvestmentDocument, WorkProgram, User, DocumentType, VerificationStatus } from '../types';
+import {
+  InvestmentDocument,
+  WorkProgram,
+  User,
+  DocumentType,
+  VerificationStatus,
+  GitHubStatusResponse
+} from '../types';
 import { formatDateIndo, formatFileSize, formatRupiah } from '../utils/formatters';
+import { GitHubRepoModal } from './GitHubRepoModal';
 
 interface DocumentsViewProps {
   documents: InvestmentDocument[];
@@ -74,9 +89,150 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
   const [filterType, setFilterType] = useState<string>(forcedType || 'Semua');
   const [filterStatus, setFilterStatus] = useState<string>('Semua');
   const [filterProker, setFilterProker] = useState<string>('Semua');
+  const [filterOnlyReal, setFilterOnlyReal] = useState<boolean>(false);
 
-  // Success Notification Toast
+  // Cloud & Storage Status
+  const [cloudInfo, setCloudInfo] = useState<{
+    connected: boolean;
+    googleCloudProject?: string;
+    firestoreDatabaseId?: string;
+    realDocumentsCount?: number;
+    completeCloudFilesCount?: number;
+    missingChunksCount?: number;
+    totalDocuments?: number;
+    dummyDocumentsCount?: number;
+  } | null>(null);
+  const [isPurgingDummies, setIsPurgingDummies] = useState(false);
+  const [isSyncingCloud, setIsSyncingCloud] = useState(false);
+  const [showPurgeConfirm, setShowPurgeConfirm] = useState(false);
+
+  // GitHub Repository Integration State
+  const [githubStatus, setGithubStatus] = useState<GitHubStatusResponse | null>(null);
+  const [showGithubModal, setShowGithubModal] = useState(false);
+  const [syncingGithubDocId, setSyncingGithubDocId] = useState<string | null>(null);
+
+  // Notifications
   const [successToast, setSuccessToast] = useState<string | null>(null);
+  const [errorToast, setErrorToast] = useState<string | null>(null);
+
+  // Fetch Cloud & Repository Status
+  const fetchCloudStatus = async () => {
+    try {
+      const res = await fetch('/api/documents/storage-status');
+      if (res.ok) {
+        const data = await res.json();
+        setCloudInfo(data);
+      }
+    } catch (e) {
+      console.warn('Storage status fetch error:', e);
+    }
+  };
+
+  const fetchGithubStatus = async () => {
+    try {
+      const res = await fetch('/api/github/status');
+      if (res.ok) {
+        const data = await res.json();
+        setGithubStatus(data);
+      }
+    } catch (e) {
+      console.warn('GitHub status fetch error:', e);
+    }
+  };
+
+  useEffect(() => {
+    fetchCloudStatus();
+    fetchGithubStatus();
+  }, [documents.length]);
+
+  // Listen for OAuth popup postMessage completion
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      const origin = event.origin || '';
+      if (!origin.endsWith('.run.app') && !origin.includes('localhost')) {
+        return;
+      }
+      if (event.data?.type === 'GITHUB_OAUTH_SUCCESS') {
+        fetchGithubStatus();
+        setSuccessToast(
+          `Akun GitHub @${event.data.user?.login || 'terhubung'} berhasil tersambung! Pilih repositori & folder tujuan.`
+        );
+        setTimeout(() => setSuccessToast(null), 5000);
+      } else if (event.data?.type === 'GITHUB_OAUTH_ERROR') {
+        setErrorToast('Gagal menghubungkan GitHub: ' + (event.data.error || 'Otorisasi ditolak'));
+        setTimeout(() => setErrorToast(null), 6000);
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+
+  const handleSyncSingleDocToGithub = async (doc: InvestmentDocument) => {
+    setSyncingGithubDocId(doc.id);
+    setErrorToast(null);
+    try {
+      const res = await fetch(`/api/documents/${doc.id}/sync-github`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Gagal menyimpan file ke GitHub');
+      setSuccessToast(`File ${doc.namaFileAsli} berhasil disimpan ke folder GitHub (${data.document?.githubPath})!`);
+      setTimeout(() => setSuccessToast(null), 5000);
+      onRefresh();
+    } catch (err: any) {
+      setErrorToast(err.message);
+      setTimeout(() => setErrorToast(null), 6000);
+    } finally {
+      setSyncingGithubDocId(null);
+    }
+  };
+
+  // Purge Dummy / Mock Seed Documents
+  const handlePurgeDummies = async () => {
+    setShowPurgeConfirm(false);
+    setIsPurgingDummies(true);
+    setErrorToast(null);
+    try {
+      const res = await fetch('/api/documents/purge-dummies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: currentUser.id,
+          userName: currentUser.name,
+          userRole: currentUser.role
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Gagal membersihkan data dummy');
+      setSuccessToast(`Berhasil membersihkan ${data.removedCount} dokumen dummy. Sisa ${data.remainingCount} berkas asli.`);
+      setTimeout(() => setSuccessToast(null), 5000);
+      onRefresh();
+      fetchCloudStatus();
+    } catch (err: any) {
+      setErrorToast('Gagal membersihkan data dummy: ' + err.message);
+      setTimeout(() => setErrorToast(null), 6000);
+    } finally {
+      setIsPurgingDummies(false);
+    }
+  };
+
+  // Sync with Google Cloud Firestore
+  const handleSyncCloud = async () => {
+    setIsSyncingCloud(true);
+    setErrorToast(null);
+    try {
+      const res = await fetch('/api/documents/cloud-sync');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Gagal sinkronisasi cloud');
+      setSuccessToast(`Sinkronisasi Google Cloud & Firestore berhasil! Ditemukan ${data.cloudDocsFound} dokumen cloud.`);
+      setTimeout(() => setSuccessToast(null), 4000);
+      onRefresh();
+      fetchCloudStatus();
+    } catch (e: any) {
+      setErrorToast('Gagal sinkronisasi cloud: ' + e.message);
+      setTimeout(() => setErrorToast(null), 6000);
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
 
   // Sync filterTahun if selectedYear prop changes
   useEffect(() => {
@@ -115,6 +271,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
   const [uploadTanggal, setUploadTanggal] = useState(new Date().toISOString().substring(0, 10));
   const [uploadCatatan, setUploadCatatan] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -134,6 +291,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
   const handleOpenUpload = (targetProkerId?: string, defaultType?: DocumentType, yrOverride?: number) => {
     setReplaceTargetDoc(null);
     setUploadFile(null);
+    setUploadError(null);
 
     const targetProker = targetProkerId ? prokerMap.get(targetProkerId) : null;
     const initialYr = yrOverride || (targetProker ? targetProker.tahunAnggaran : (filterTahun !== 'Semua' ? parseInt(filterTahun) : (availableYears[availableYears.length - 1] || 2026)));
@@ -189,6 +347,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
   const handleOpenReplaceVersion = (doc: InvestmentDocument) => {
     setReplaceTargetDoc(doc);
     setUploadFile(null);
+    setUploadError(null);
     const docYr = doc.tahunAnggaran || prokerMap.get(doc.prokerId)?.tahunAnggaran || 2026;
     setUploadTahun(docYr);
     setUploadProkerId(doc.prokerId);
@@ -236,8 +395,9 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
 
   const handleSubmitUpload = async (e: React.FormEvent) => {
     e.preventDefault();
+    setUploadError(null);
     if (!uploadFile) {
-      alert('Pilih file berkas dokumen terlebih dahulu');
+      setUploadError('Pilih file berkas dokumen terlebih dahulu.');
       return;
     }
 
@@ -277,14 +437,15 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
       setFilterStatus('Semua');
 
       const successMsg = replaceTargetDoc
-        ? `Versi baru berkas ${finalNomor} (${uploadJenis}) berhasil disimpan permanen di repositori!`
-        : `Berkas ${uploadJenis} (${finalNomor}) berhasil diunggah & tersimpan aman di repositori (lokal & cloud)!`;
+        ? `Versi baru berkas ${finalNomor} (${uploadJenis}) berhasil disimpan permanen ke Google Cloud Firestore!`
+        : `Berkas ${uploadJenis} (${finalNomor}) berhasil diunggah & tersimpan lengkap di Google Cloud Firestore!`;
       setSuccessToast(successMsg);
       setTimeout(() => setSuccessToast(null), 5000);
 
       onRefresh();
+      fetchCloudStatus();
     } catch (err: any) {
-      alert('Error mengunggah dokumen: ' + err.message);
+      setUploadError(err.message || 'Gagal mengunggah dokumen ke penyimpanan Cloud.');
     } finally {
       setIsSubmitting(false);
     }
@@ -320,9 +481,22 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
         d.kodeProker.toLowerCase().includes(search.toLowerCase()) ||
         (d.namaVendor && d.namaVendor.toLowerCase().includes(search.toLowerCase()));
 
-      return matchYear && matchForced && matchType && matchStatus && matchProker && matchSearch;
+      const matchReal = !filterOnlyReal || d.isRealFile === true || d.source === 'google-cloud-firebase';
+
+      return matchYear && matchForced && matchType && matchStatus && matchProker && matchSearch && matchReal;
     });
-  }, [documents, prokerMap, filterTahun, forcedType, filterType, filterStatus, filterProker, search]);
+  }, [documents, prokerMap, filterTahun, forcedType, filterType, filterStatus, filterProker, search, filterOnlyReal]);
+
+  const hiddenInOtherYearsCount = useMemo(() => {
+    if (filterTahun === 'Semua') return 0;
+    return documents.filter((d) => {
+      const docYear = d.tahunAnggaran || prokerMap.get(d.prokerId)?.tahunAnggaran;
+      const inOtherYear = !docYear || docYear.toString() !== filterTahun;
+      const matchForced = !forcedType || d.jenisDokumen === forcedType;
+      const matchType = filterType === 'Semua' || d.jenisDokumen === filterType;
+      return inOtherYear && matchForced && matchType;
+    }).length;
+  }, [documents, prokerMap, filterTahun, forcedType, filterType]);
 
   const docKpis = useMemo(() => {
     const total = filteredDocs.length;
@@ -402,7 +576,7 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
 
   return (
     <div className="space-y-5">
-      {/* SUCCESS TOAST NOTIFICATION */}
+      {/* SUCCESS / ERROR TOAST NOTIFICATIONS */}
       {successToast && (
         <div className="bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 px-4 py-3 rounded-xl flex items-center justify-between shadow-lg text-xs animate-in fade-in">
           <div className="flex items-center gap-2">
@@ -415,46 +589,173 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
         </div>
       )}
 
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-[#111e3f] border border-[#203463] p-4 rounded-2xl shadow-lg">
-        <div>
+      {errorToast && (
+        <div className="bg-red-500/15 border border-red-500/40 text-red-300 px-4 py-3 rounded-xl flex items-center justify-between shadow-lg text-xs animate-in fade-in">
           <div className="flex items-center gap-2">
-            <FolderLock className="w-5 h-5 text-orange-400" />
-            <h2 className="text-lg font-bold text-white tracking-tight">
-              {forcedType
-                ? `Manajemen Dokumen ${forcedType}`
-                : 'Pusat Manajemen Dokumen Investasi CAPEX'}
-            </h2>
-            <span className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[10px] font-mono font-semibold">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              <span>Penyimpanan Permanen Aktif</span>
-            </span>
+            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+            <span className="font-semibold">{errorToast}</span>
           </div>
-          <p className="text-xs text-slate-400 mt-0.5">
-            Arsip terpusat PKS, SPK, Invoice, BAPP, dan FS-BC tersimpan aman di repositori permanen (penyimpanan lokal & cloud persistence)
-          </p>
+          <button onClick={() => setErrorToast(null)} className="text-red-400 hover:text-white">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Header */}
+      <div className="flex flex-col gap-3 bg-[#111e3f] border border-[#203463] p-4 rounded-2xl shadow-lg">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <FolderLock className="w-5 h-5 text-orange-400" />
+              <h2 className="text-lg font-bold text-white tracking-tight">
+                {forcedType
+                  ? `Manajemen Dokumen ${forcedType}`
+                  : 'Pusat Manajemen Dokumen Investasi CAPEX'}
+              </h2>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-cyan-500/15 border border-cyan-500/30 text-cyan-300 text-[10px] font-mono font-semibold">
+                <Cloud className="w-3 h-3 text-cyan-400" />
+                <span>Google Cloud & Firestore Terhubung</span>
+              </span>
+            </div>
+            <p className="text-xs text-slate-400 mt-1">
+              Repositori resmi berkas asli PKS, SPK, Invoice, BAPP, dan FS-BC tersimpan realtime di Google Cloud Firestore (tanpa data dummy).
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* GitHub Integration Button */}
+            <button
+              onClick={() => setShowGithubModal(true)}
+              title="Hubungkan akun GitHub & atur folder repositori"
+              className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border ${
+                githubStatus?.connected
+                  ? 'bg-emerald-950/50 hover:bg-emerald-900/60 text-emerald-300 border-emerald-500/40'
+                  : 'bg-[#18294e] hover:bg-[#203666] text-slate-200 border-[#2d4885]'
+              }`}
+            >
+              <Github className="w-3.5 h-3.5" />
+              <span>
+                {githubStatus?.connected
+                  ? githubStatus.repoConfig?.repo
+                    ? `GitHub: ${githubStatus.repoConfig.repo}`
+                    : `GitHub: @${githubStatus.user?.login || 'Terhubung'}`
+                  : 'Hubungkan GitHub'}
+              </span>
+            </button>
+
+            {/* Sync Cloud Button */}
+            <button
+              onClick={handleSyncCloud}
+              disabled={isSyncingCloud}
+              title="Sinkronisasi dengan Google Cloud Firestore"
+              className="px-3 py-2 bg-[#18294e] hover:bg-[#203666] text-cyan-300 border border-cyan-500/30 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isSyncingCloud ? 'animate-spin' : ''}`} />
+              <span>{isSyncingCloud ? 'Sinkron...' : 'Sinkron Cloud'}</span>
+            </button>
+
+            {/* Purge Dummies Button */}
+            {canDelete && (
+              <button
+                onClick={() => setShowPurgeConfirm(true)}
+                disabled={isPurgingDummies}
+                title="Hapus berkas dummy/sample agar hanya menyimpan berkas asli"
+                className="px-3 py-2 bg-red-950/40 hover:bg-red-900/60 text-red-300 border border-red-500/30 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                <span>{isPurgingDummies ? 'Membersihkan...' : 'Bersihkan Data Dummy'}</span>
+              </button>
+            )}
+
+            {onOpenAddYearModal && (
+              <button
+                onClick={onOpenAddYearModal}
+                className="px-3 py-2 bg-[#18294e] hover:bg-[#203666] text-slate-200 border border-[#253d73] rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all"
+              >
+                <Calendar className="w-3.5 h-3.5 text-orange-400" />
+                <span>+ Tambah Tahun</span>
+              </button>
+            )}
+
+            {canUpload && (
+              <button
+                onClick={() => handleOpenUpload()}
+                className="px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md shadow-orange-500/20 transition-all active:scale-95 shrink-0"
+              >
+                <Upload className="w-4 h-4" />
+                <span>Upload Dokumen Asli {forcedType || ''}</span>
+              </button>
+            )}
+          </div>
         </div>
 
-        <div className="flex items-center gap-2.5">
-          {onOpenAddYearModal && (
-            <button
-              onClick={onOpenAddYearModal}
-              className="px-3 py-2 bg-[#18294e] hover:bg-[#203666] text-slate-200 border border-[#253d73] rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all"
-            >
-              <Calendar className="w-3.5 h-3.5 text-orange-400" />
-              <span>+ Tambah Tahun</span>
-            </button>
-          )}
+        {/* Cloud & GitHub Connection Details Bar */}
+        <div className="bg-[#0b1429] border border-[#1e325c] rounded-xl px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+          <div className="flex items-center gap-2 flex-wrap text-slate-300 font-mono">
+            <span className="flex items-center gap-1 text-emerald-400 font-bold">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span>Cloud Status: AKTIF</span>
+            </span>
+            <span className="text-slate-600">|</span>
+            <span>Project: <strong className="text-white">{cloudInfo?.googleCloudProject || 'voltaic-adapter-zw2pc'}</strong></span>
+            <span className="text-slate-600">|</span>
+            <span>Database: <strong className="text-cyan-300">{cloudInfo?.firestoreDatabaseId || 'ai-studio-dalistadashboard-5a0a1f6c-c750-4896-b458-9f27fde3215d'}</strong></span>
+            {cloudInfo && typeof cloudInfo.completeCloudFilesCount === 'number' && (
+              <>
+                <span className="text-slate-600">|</span>
+                <span className="text-emerald-300">
+                  File Lengkap: <strong>{cloudInfo.completeCloudFilesCount}</strong>
+                </span>
+              </>
+            )}
+            {cloudInfo && (cloudInfo.missingChunksCount || 0) > 0 && (
+              <>
+                <span className="text-slate-600">|</span>
+                <span className="text-amber-300 font-semibold flex items-center gap-1">
+                  <AlertTriangle className="w-3 h-3 text-amber-400" />
+                  <span>{cloudInfo.missingChunksCount} Dokumen Perlu Upload Ulang</span>
+                </span>
+              </>
+            )}
+            <span className="text-slate-600">|</span>
+            {githubStatus?.connected ? (
+              <button
+                type="button"
+                onClick={() => setShowGithubModal(true)}
+                className="text-emerald-300 hover:text-emerald-200 flex items-center gap-1 font-semibold"
+              >
+                <FolderGit2 className="w-3 h-3" />
+                <span>
+                  GitHub: {githubStatus.repoConfig?.owner && githubStatus.repoConfig?.repo
+                    ? `${githubStatus.repoConfig.owner}/${githubStatus.repoConfig.repo}/${githubStatus.repoConfig.folderPath}`
+                    : `@${githubStatus.user?.login} (Pilih Repo)`}
+                </span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowGithubModal(true)}
+                className="text-slate-400 hover:text-white flex items-center gap-1"
+              >
+                <Github className="w-3 h-3" />
+                <span>GitHub: Belum Terhubung (Klik untuk Atur)</span>
+              </button>
+            )}
+          </div>
 
-          {canUpload && (
+          <div className="flex items-center gap-2">
             <button
-              onClick={() => handleOpenUpload()}
-              className="px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md shadow-orange-500/20 transition-all active:scale-95 shrink-0"
+              onClick={() => setFilterOnlyReal(!filterOnlyReal)}
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold flex items-center gap-1.5 transition-all ${
+                filterOnlyReal
+                  ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+                  : 'bg-[#18294e] text-slate-300 hover:text-white border border-[#253d73]'
+              }`}
             >
-              <Upload className="w-4 h-4" />
-              <span>Upload Dokumen {forcedType || ''}</span>
+              <Cloud className="w-3 h-3 text-cyan-400" />
+              <span>{filterOnlyReal ? '✓ Menampilkan Hanya Berkas Asli' : 'Tampilkan Hanya Berkas Asli'}</span>
             </button>
-          )}
+          </div>
         </div>
       </div>
 
@@ -628,6 +929,24 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
         </div>
       </div>
 
+      {/* Cross-Year Filter Info Banner */}
+      {hiddenInOtherYearsCount > 0 && (
+        <div className="bg-blue-500/10 border border-blue-500/30 rounded-xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-blue-200">
+          <div className="flex items-center gap-2">
+            <Calendar className="w-4 h-4 text-blue-400 shrink-0" />
+            <span>
+              Filter aktif: <strong>TA {filterTahun}</strong>. Terdapat <strong>{hiddenInOtherYearsCount}</strong> dokumen lain tersimpan di tahun anggaran berbeda.
+            </span>
+          </div>
+          <button
+            onClick={() => setFilterTahun('Semua')}
+            className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-[11px] font-semibold transition-colors"
+          >
+            Tampilkan Semua Tahun
+          </button>
+        </div>
+      )}
+
       {/* Dokumen Table */}
       <div className="bg-[#13203c] border border-[#1e325c] rounded-2xl shadow-xl overflow-hidden">
         <div className="overflow-x-auto">
@@ -685,21 +1004,56 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                       <span className="text-[10px] text-orange-400 font-mono">v{doc.versi}</span>
                     </td>
                     <td className="py-3 px-3">
-                      <button
-                        onClick={() => onPreviewDocument(doc)}
-                        className="text-white font-medium hover:text-orange-400 text-left block truncate max-w-xs transition-colors"
-                        title="Klik untuk melihat preview"
-                      >
-                        {doc.namaFileAsli}
-                      </button>
-                      <div className="flex items-center gap-1.5 mt-0.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <button
+                          onClick={() => onPreviewDocument(doc)}
+                          className="text-white font-medium hover:text-orange-400 text-left block truncate max-w-xs transition-colors"
+                          title="Klik untuk melihat preview"
+                        >
+                          {doc.namaFileAsli}
+                        </button>
+                        {doc.isRealFile || doc.source === 'google-cloud-firebase' ? (
+                          <span className="inline-flex items-center gap-1 text-[9px] px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 font-semibold font-mono">
+                            <Cloud className="w-2.5 h-2.5 text-cyan-400" />
+                            <span>Berkas Asli Cloud</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 border border-amber-500/20 font-mono">
+                            <span>Data Contoh (Dummy)</span>
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                         <span className="text-[10px] text-slate-400 font-mono">
                           {formatFileSize(doc.ukuranFile)} · {doc.picPengunggah}
                         </span>
-                        <span className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono font-medium">
-                          <Check className="w-2.5 h-2.5" />
-                          <span>Tersimpan</span>
-                        </span>
+                        {doc.cloudFileStatus === 'missing_chunks' ? (
+                          <span
+                            title="Metadata tersimpan sebelum perbaikan aturan subkoleksi chunks. Silakan upload ulang file agar tersimpan lengkap di Cloud."
+                            className="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 font-mono font-semibold"
+                          >
+                            <AlertTriangle className="w-2.5 h-2.5 text-amber-400" />
+                            <span>Isi File Hilang (Perlu Upload Ulang)</span>
+                          </span>
+                        ) : doc.isRealFile || doc.source === 'google-cloud-firebase' ? (
+                          <span className="inline-flex items-center gap-0.5 text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono font-medium">
+                            <Check className="w-2.5 h-2.5" />
+                            <span>Tersimpan Lengkap di Cloud</span>
+                          </span>
+                        ) : null}
+                        {doc.githubUrl && (
+                          <a
+                            href={doc.githubUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title={`Tersimpan di ${doc.githubRepo}/${doc.githubPath}`}
+                            className="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 font-mono transition-colors"
+                          >
+                            <Github className="w-2.5 h-2.5" />
+                            <span>GitHub</span>
+                            <ExternalLink className="w-2.5 h-2.5 text-cyan-400" />
+                          </a>
+                        )}
                       </div>
                     </td>
                     <td className="py-3 px-3 text-slate-300 text-[11px]">
@@ -718,21 +1072,44 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                     </td>
                     <td className="py-3 px-3 text-center whitespace-nowrap">
                       <div className="flex items-center justify-center gap-1">
-                        <button
-                          onClick={() => onPreviewDocument(doc)}
-                          title="Lihat / Preview Dokumen"
-                          className="p-1 rounded hover:bg-[#203666] text-blue-400 hover:text-white"
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => onDownloadDocument(doc)}
-                          title="Download File Asli"
-                          className="p-1 rounded hover:bg-[#203666] text-emerald-400 hover:text-white"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                        </button>
-                        {canUpload && (
+                        {doc.cloudFileStatus === 'missing_chunks' && canUpload ? (
+                          <button
+                            onClick={() => handleOpenReplaceVersion(doc)}
+                            title="Upload Ulang Berkas Fisik ke Cloud"
+                            className="px-2 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-[10px] font-bold flex items-center gap-1"
+                          >
+                            <FileUp className="w-3 h-3" />
+                            <span>Upload Ulang</span>
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => onPreviewDocument(doc)}
+                              title="Lihat / Preview Dokumen"
+                              className="p-1 rounded hover:bg-[#203666] text-blue-400 hover:text-white"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => onDownloadDocument(doc)}
+                              title="Download File Asli"
+                              className="p-1 rounded hover:bg-[#203666] text-emerald-400 hover:text-white"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                            </button>
+                            {githubStatus?.connected && githubStatus.repoConfig?.repo && (
+                              <button
+                                onClick={() => handleSyncSingleDocToGithub(doc)}
+                                disabled={syncingGithubDocId === doc.id}
+                                title={doc.githubUrl ? 'Update file di folder GitHub' : 'Simpan file ke folder GitHub'}
+                                className="p-1 rounded hover:bg-[#203666] text-cyan-300 hover:text-white disabled:opacity-50"
+                              >
+                                <UploadCloud className={`w-3.5 h-3.5 ${syncingGithubDocId === doc.id ? 'animate-pulse' : ''}`} />
+                              </button>
+                            )}
+                          </>
+                        )}
+                        {canUpload && doc.cloudFileStatus !== 'missing_chunks' && (
                           <button
                             onClick={() => handleOpenReplaceVersion(doc)}
                             title="Upload Versi Baru (Update File)"
@@ -874,6 +1251,27 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                       </div>
                     )}
                   </div>
+                </div>
+
+                {/* Cloud & GitHub Storage Notice */}
+                <div className="mt-2 space-y-1.5">
+                  <div className="flex items-center gap-2 p-2.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-300 text-[11px]">
+                    <Cloud className="w-4 h-4 text-cyan-400 shrink-0" />
+                    <span>
+                      Berkas asli akan diunggah dan disimpan permanen di <strong>Google Cloud & Firebase Firestore</strong> (Database: <code className="text-white font-mono text-[10px]">ai-studio-dalistadashboard-5a0a1f6c-c750-4896-b458-9f27fde3215d</code>).
+                    </span>
+                  </div>
+                  {githubStatus?.connected && githubStatus.repoConfig?.repo && githubStatus.repoConfig.autoSyncOnUpload !== false && (
+                    <div className="flex items-center gap-2 p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 text-[11px]">
+                      <Github className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span>
+                        Sinkronisasi GitHub Aktif: File juga akan otomatis di-commit ke{' '}
+                        <code className="text-white font-mono text-[10px]">
+                          {githubStatus.repoConfig.owner}/{githubStatus.repoConfig.repo}/{githubStatus.repoConfig.folderPath}
+                        </code>.
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1030,6 +1428,13 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
                   className="w-full bg-[#0d1733] border border-[#213565] rounded-lg p-2 text-white focus:border-orange-500"
                 />
               </div>
+
+              {uploadError && (
+                <div className="bg-red-500/15 border border-red-500/40 text-red-300 px-3 py-2.5 rounded-lg flex items-start gap-2 text-xs">
+                  <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                  <span>{uploadError}</span>
+                </div>
+              )}
 
               <div className="flex justify-end gap-2 pt-2 border-t border-[#1c2c54]">
                 <button
@@ -1197,6 +1602,48 @@ export const DocumentsView: React.FC<DocumentsViewProps> = ({
           </div>
         </div>
       )}
+      {/* PURGE DUMMIES CONFIRMATION MODAL */}
+      {showPurgeConfirm && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#111e3f] border border-red-500/30 rounded-2xl w-full max-w-md shadow-2xl p-6 text-center space-y-4">
+            <div className="w-12 h-12 rounded-full bg-red-500/20 text-red-400 flex items-center justify-center mx-auto">
+              <ShieldAlert className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-white">Bersihkan Data Contoh (Dummy)?</h3>
+              <p className="text-xs text-slate-400 mt-1">
+                Hapus semua berkas dummy/contoh dari database sehingga repositori hanya menyimpan dokumen asli yang Anda unggah ke Google Cloud Firestore.
+              </p>
+            </div>
+            <div className="flex justify-center gap-2 pt-2">
+              <button
+                onClick={() => setShowPurgeConfirm(false)}
+                className="px-4 py-2 bg-[#18294e] text-slate-300 rounded-lg hover:bg-[#203666] text-xs font-semibold"
+              >
+                Batal
+              </button>
+              <button
+                onClick={handlePurgeDummies}
+                className="px-5 py-2 bg-red-600 hover:bg-red-500 text-white font-bold rounded-lg text-xs shadow-md"
+              >
+                Ya, Bersihkan Dummy
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* GITHUB OAUTH & REPO CONFIG MODAL */}
+      <GitHubRepoModal
+        isOpen={showGithubModal}
+        onClose={() => setShowGithubModal(false)}
+        githubStatus={githubStatus}
+        onStatusChanged={fetchGithubStatus}
+        onDocumentsSynced={() => {
+          onRefresh();
+          fetchCloudStatus();
+        }}
+      />
     </div>
   );
 };

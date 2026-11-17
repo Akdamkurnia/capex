@@ -1,0 +1,115 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper primitives
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function isValidDocument(data) {
+      return data.keys().hasAll(['id', 'prokerId', 'jenisDokumen', 'nomorDokumen', 'namaDokumen', 'namaFileAsli']) &&
+             data.id is string && data.id.size() > 0 && data.id.size() <= 128 &&
+             data.prokerId is string && data.prokerId.size() > 0 && data.prokerId.size() <= 128 &&
+             data.jenisDokumen in ['PKS', 'SPK', 'Invoice', 'BAPP', 'FS-BC'] &&
+             data.nomorDokumen is string && data.nomorDokumen.size() > 0 && data.nomorDokumen.size() <= 200 &&
+             data.namaDokumen is string && data.namaDokumen.size() > 0 && data.namaDokumen.size() <= 500 &&
+             data.namaFileAsli is string && data.namaFileAsli.size() > 0 && data.namaFileAsli.size() <= 500;
+    }
+
+    function isValidDocumentFile(data) {
+      return data.keys().hasAll(['docId', 'fileName', 'mimeType', 'size']) &&
+             data.docId is string && data.docId.size() > 0 && data.docId.size() <= 128 &&
+             data.fileName is string && data.fileName.size() > 0 && data.fileName.size() <= 500 &&
+             data.mimeType is string && data.mimeType.size() > 0 && data.mimeType.size() <= 200 &&
+             data.size is number && data.size >= 0 &&
+             (!('base64' in data) || (data.base64 is string && data.base64.size() <= 950000));
+    }
+
+    function isValidDocumentChunk(data) {
+      return data.keys().hasAll(['index', 'data']) &&
+             data.index is number && data.index >= 0 &&
+             data.data is string && data.data.size() > 0 && data.data.size() <= 850000;
+    }
+
+    function isValidWorkProgram(data) {
+      return data.keys().hasAll(['id', 'kodeProker', 'namaProker', 'tahunAnggaran']) &&
+             data.id is string && data.id.size() > 0 && data.id.size() <= 128 &&
+             data.kodeProker is string && data.kodeProker.size() > 0 && data.kodeProker.size() <= 128 &&
+             data.namaProker is string && data.namaProker.size() > 0 && data.namaProker.size() <= 500 &&
+             data.tahunAnggaran is number;
+    }
+
+    function isValidIntegrationConfig(data) {
+      return data.keys().hasAll(['provider', 'connected', 'updatedAt']) &&
+             !('accessToken' in data) &&
+             !('access_token' in data) &&
+             !('clientSecret' in data) &&
+             data.provider is string && data.provider.size() > 0 && data.provider.size() <= 64 &&
+             data.connected is bool &&
+             data.updatedAt is string && data.updatedAt.size() > 0 && data.updatedAt.size() <= 64 &&
+             (!('owner' in data) || (data.owner is string && data.owner.size() <= 128)) &&
+             (!('repo' in data) || (data.repo is string && data.repo.size() <= 200)) &&
+             (!('branch' in data) || (data.branch is string && data.branch.size() <= 128)) &&
+             (!('folderPath' in data) || (data.folderPath is string && data.folderPath.size() <= 300));
+    }
+
+    // Global safety net: default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Connection test doc
+    match /test/connection {
+      allow read: if true;
+    }
+
+    // Documents metadata collection (PKS, SPK, Invoice, BAPP, FS-BC)
+    match /documents/{documentId} {
+      allow list: if true;
+      allow get: if isValidId(documentId);
+      allow create: if isValidId(documentId) && isValidDocument(incoming());
+      allow update: if isValidId(documentId) && isValidDocument(incoming());
+      allow delete: if isValidId(documentId);
+    }
+
+    // Documents binary file storage collection in Cloud Firestore
+    match /document_files/{documentId} {
+      allow list: if true;
+      allow get: if isValidId(documentId);
+      allow create: if isValidId(documentId) && isValidDocumentFile(incoming());
+      allow update: if isValidId(documentId) && isValidDocumentFile(incoming());
+      allow delete: if isValidId(documentId);
+
+      // Sub-collection for chunked file binary payloads (>650KB)
+      match /chunks/{chunkId} {
+        allow list: if isValidId(documentId);
+        allow get: if isValidId(documentId) && isValidId(chunkId);
+        allow create: if isValidId(documentId) && isValidId(chunkId) && isValidDocumentChunk(incoming());
+        allow update: if isValidId(documentId) && isValidId(chunkId) && isValidDocumentChunk(incoming());
+        allow delete: if isValidId(documentId) && isValidId(chunkId);
+      }
+    }
+
+    // Non-secret integration settings (GitHub repo & folder mapping)
+    match /integrations/{integrationId} {
+      allow list: if true;
+      allow get: if isValidId(integrationId);
+      allow create: if isValidId(integrationId) && isValidIntegrationConfig(incoming());
+      allow update: if isValidId(integrationId) && isValidIntegrationConfig(incoming());
+      allow delete: if isValidId(integrationId);
+    }
+
+    // Work programs collection
+    match /work_programs/{prokerId} {
+      allow list: if true;
+      allow get: if isValidId(prokerId);
+      allow create: if isValidId(prokerId) && isValidWorkProgram(incoming());
+      allow update: if isValidId(prokerId) && isValidWorkProgram(incoming());
+      allow delete: if isValidId(prokerId);
+    }
+  }
+}

@@ -50,6 +50,7 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
   };
 
   const isPdf = document.tipeMime?.includes('pdf') || document.namaFileAsli?.toLowerCase().endsWith('.pdf');
+  const isImage = document.tipeMime?.startsWith('image/') || /\.(png|jpe?g|gif|webp)$/i.test(document.namaFileAsli || '');
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-hidden animate-in fade-in">
@@ -82,7 +83,9 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
           <div className="flex items-center gap-2">
             <button
               onClick={() => onDownload(document)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#182a55] hover:bg-orange-500 hover:text-white text-orange-400 rounded-lg text-xs font-semibold border border-[#2b4480] transition-colors"
+              disabled={document.cloudFileStatus === 'missing_chunks'}
+              title={document.cloudFileStatus === 'missing_chunks' ? 'Isi file hilang dari penyimpanan sebelumnya — silakan upload ulang' : 'Download File Asli'}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#182a55] hover:bg-orange-500 hover:text-white text-orange-400 rounded-lg text-xs font-semibold border border-[#2b4480] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Download className="w-3.5 h-3.5" />
               <span>Download File Asli</span>
@@ -136,12 +139,39 @@ export const DocumentPreviewModal: React.FC<DocumentPreviewModalProps> = ({
           <div className="flex-1 bg-[#091124] overflow-y-auto p-4 flex flex-col items-center justify-center">
             {activeTab === 'preview' && (
               <div className="w-full h-full flex flex-col items-center justify-center">
-                {isPdf ? (
+                {document.cloudFileStatus === 'missing_chunks' ? (
+                  <div className="bg-[#13203c] border border-amber-500/40 rounded-2xl p-8 max-w-lg text-center space-y-4 shadow-xl">
+                    <div className="w-14 h-14 rounded-full bg-amber-500/20 border border-amber-500/30 text-amber-400 flex items-center justify-center mx-auto">
+                      <AlertTriangle className="w-7 h-7" />
+                    </div>
+                    <h4 className="text-base font-bold text-white">Isi File Tidak Ditemukan di Cloud Storage</h4>
+                    <p className="text-xs text-slate-300 leading-relaxed">
+                      Metadata dokumen <strong className="text-white font-mono">{document.namaFileAsli}</strong> ({formatFileSize(document.ukuranFile)}) tercatat di database, namun potongan isi berkas (<code className="text-amber-300 font-mono">chunks</code>) tidak tersimpan saat upload terdahulu akibat pembatasan izin Firestore sebelum perbaikan.
+                    </p>
+                    <p className="text-xs text-slate-400">
+                      Silakan tutup preview ini lalu klik tombol <strong className="text-amber-300">Upload Ulang</strong> pada baris dokumen terkait agar berkas tersimpan permanen di Firestore.
+                    </p>
+                    <button
+                      onClick={onClose}
+                      className="px-5 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold transition-colors"
+                    >
+                      Tutup & Upload Ulang
+                    </button>
+                  </div>
+                ) : isPdf ? (
                   <iframe
                     src={`/api/documents/${document.id}/preview`}
                     className="w-full h-full rounded-xl border border-[#1e325c] bg-white shadow-inner"
                     title={document.namaDokumen}
                   />
+                ) : isImage ? (
+                  <div className="w-full h-full flex items-center justify-center p-2">
+                    <img
+                      src={`/api/documents/${document.id}/preview`}
+                      alt={document.namaDokumen}
+                      className="max-h-[80vh] max-w-full object-contain rounded-xl border border-[#1e325c] shadow-lg"
+                    />
+                  </div>
                 ) : (
                   <div className="bg-[#13203c] border border-[#1e325c] rounded-2xl p-8 max-w-lg text-center space-y-4">
                     <FileText className="w-16 h-16 text-orange-400 mx-auto" />

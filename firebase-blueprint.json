@@ -1,0 +1,145 @@
+{
+  "entities": {
+    "InvestmentDocument": {
+      "title": "InvestmentDocument",
+      "description": "Metadata berkas dokumen investasi CAPEX PT Pos Indonesia (PKS, SPK, Invoice, BAPP, FS-BC)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier dokumen", "maxLength": 128 },
+        "prokerId": { "type": "string", "description": "ID program kerja investasi", "maxLength": 128 },
+        "kodeProker": { "type": "string", "description": "Kode proker investasi", "maxLength": 128 },
+        "namaProker": { "type": "string", "description": "Nama proker investasi", "maxLength": 500 },
+        "tahunAnggaran": { "type": "number", "description": "Tahun anggaran proker" },
+        "jenisDokumen": {
+          "type": "string",
+          "description": "Jenis dokumen wajib CAPEX",
+          "enum": ["PKS", "SPK", "Invoice", "BAPP", "FS-BC"]
+        },
+        "nomorDokumen": { "type": "string", "description": "Nomor surat resmi dokumen", "maxLength": 200 },
+        "namaDokumen": { "type": "string", "description": "Judul atau perihal dokumen", "maxLength": 500 },
+        "tanggalDokumen": { "type": "string", "description": "Tanggal penerbitan dokumen (YYYY-MM-DD)", "maxLength": 32 },
+        "tanggalBerlaku": { "type": "string", "description": "Tanggal masa berlaku dokumen", "maxLength": 32 },
+        "nilaiDokumen": { "type": "number", "description": "Nominal nilai dokumen dalam Miliar Rp" },
+        "namaVendor": { "type": "string", "description": "Nama rekanan vendor atau mitra pelaksana", "maxLength": 300 },
+        "picPengunggah": { "type": "string", "description": "Nama PIC yang mengunggah berkas", "maxLength": 200 },
+        "tanggalUpload": { "type": "string", "description": "Tanggal pengunggahan dokumen", "maxLength": 32 },
+        "versi": { "type": "number", "description": "Nomor versi dokumen" },
+        "statusVerifikasi": {
+          "type": "string",
+          "description": "Status verifikasi dokumen",
+          "enum": ["Terverifikasi", "Menunggu Verifikasi", "Perlu Perbaikan", "Draft"]
+        },
+        "catatanReviewer": { "type": "string", "description": "Catatan review atau verifikasi", "maxLength": 2000 },
+        "namaFileAsli": { "type": "string", "description": "Nama file asli yang diunggah pengguna", "maxLength": 500 },
+        "ukuranFile": { "type": "number", "description": "Ukuran file dalam bytes" },
+        "tipeMime": { "type": "string", "description": "MIME type berkas dokumen", "maxLength": 200 },
+        "fileUrl": { "type": "string", "description": "URL akses unduh atau pratinjau berkas", "maxLength": 500 },
+        "isRealFile": { "type": "boolean", "description": "Penanda berkas asli hasil unggahan pengguna" },
+        "source": { "type": "string", "description": "Sumber penyimpanan berkas", "maxLength": 64 },
+        "cloudSyncAt": { "type": "string", "description": "Timestamp sinkronisasi cloud ISO", "maxLength": 64 },
+        "cloudStorage": { "type": "string", "description": "Label penyimpanan cloud", "maxLength": 128 },
+        "githubRepo": { "type": "string", "description": "Repositori GitHub tujuan (owner/repo)", "maxLength": 256 },
+        "githubBranch": { "type": "string", "description": "Branch repositori GitHub", "maxLength": 128 },
+        "githubPath": { "type": "string", "description": "Path file di dalam repositori GitHub", "maxLength": 600 },
+        "githubUrl": { "type": "string", "description": "URL langsung file di GitHub", "maxLength": 700 },
+        "githubSha": { "type": "string", "description": "Git blob SHA file di GitHub", "maxLength": 128 },
+        "githubSyncedAt": { "type": "string", "description": "Timestamp sinkronisasi GitHub ISO", "maxLength": 64 }
+      },
+      "required": ["id", "prokerId", "jenisDokumen", "nomorDokumen", "namaDokumen", "namaFileAsli"]
+    },
+    "DocumentFile": {
+      "title": "DocumentFile",
+      "description": "Header atau payload biner langsung file asli dokumen investasi di Cloud Firestore",
+      "type": "object",
+      "properties": {
+        "docId": { "type": "string", "description": "ID dokumen rujukan", "maxLength": 128 },
+        "fileName": { "type": "string", "description": "Nama berkas asli", "maxLength": 500 },
+        "mimeType": { "type": "string", "description": "MIME type berkas", "maxLength": 200 },
+        "size": { "type": "number", "description": "Ukuran berkas dalam bytes" },
+        "base64": { "type": "string", "description": "Konten biner berkas dalam format base64 untuk file kecil", "maxLength": 950000 },
+        "chunked": { "type": "boolean", "description": "Apakah berkas dipecah ke sub-koleksi chunks" },
+        "totalChunks": { "type": "number", "description": "Jumlah total chunk jika chunked = true" },
+        "updatedAt": { "type": "string", "description": "Waktu pembaruan terakhir ISO", "maxLength": 64 }
+      },
+      "required": ["docId", "fileName", "mimeType", "size"]
+    },
+    "DocumentFileChunk": {
+      "title": "DocumentFileChunk",
+      "description": "Potongan biner base64 berkas dokumen berukuran besar (>650KB) di sub-koleksi chunks",
+      "type": "object",
+      "properties": {
+        "index": { "type": "number", "description": "Urutan indeks chunk (0..N-1)" },
+        "data": { "type": "string", "description": "Payload base64 potongan berkas (maks ~600KB)", "maxLength": 850000 }
+      },
+      "required": ["index", "data"]
+    },
+    "IntegrationConfig": {
+      "title": "IntegrationConfig",
+      "description": "Konfigurasi non-rahasia integrasi repositori GitHub untuk sinkronisasi berkas dokumen",
+      "type": "object",
+      "properties": {
+        "provider": { "type": "string", "maxLength": 64 },
+        "connected": { "type": "boolean" },
+        "githubLogin": { "type": "string", "maxLength": 128 },
+        "githubName": { "type": "string", "maxLength": 200 },
+        "githubEmail": { "type": "string", "maxLength": 256 },
+        "avatarUrl": { "type": "string", "maxLength": 500 },
+        "owner": { "type": "string", "maxLength": 128 },
+        "repo": { "type": "string", "maxLength": 200 },
+        "branch": { "type": "string", "maxLength": 128 },
+        "folderPath": { "type": "string", "maxLength": 300 },
+        "organizeByYearType": { "type": "boolean" },
+        "autoSyncOnUpload": { "type": "boolean" },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["provider", "connected", "updatedAt"]
+    },
+    "WorkProgram": {
+      "title": "WorkProgram",
+      "description": "Data master program kerja investasi CAPEX PT Pos Indonesia",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "kodeProker": { "type": "string", "maxLength": 128 },
+        "namaProker": { "type": "string", "maxLength": 500 },
+        "tahunAnggaran": { "type": "number" },
+        "functionalArea": { "type": "string", "maxLength": 200 },
+        "jenisBosie": { "type": "string", "maxLength": 32 },
+        "direktorat": { "type": "string", "maxLength": 200 },
+        "subdit": { "type": "string", "maxLength": 200 },
+        "divisiUnitKerja": { "type": "string", "maxLength": 200 },
+        "ownerPic": { "type": "string", "maxLength": 200 },
+        "keteranganPpk": { "type": "string", "maxLength": 200 },
+        "ownerCategory": { "type": "string", "maxLength": 100 },
+        "nilaiCapexRkap": { "type": "number" },
+        "nilaiKontrak": { "type": "number" },
+        "nilaiRilis": { "type": "number" },
+        "nilaiAktual": { "type": "number" },
+        "progresFisik": { "type": "number" }
+      },
+      "required": ["id", "kodeProker", "namaProker", "tahunAnggaran"]
+    }
+  },
+  "firestore": {
+    "/documents/{documentId}": {
+      "schema": { "$ref": "#/entities/InvestmentDocument" },
+      "description": "Koleksi metadata dokumen investasi (PKS, SPK, Invoice, BAPP, FS-BC)"
+    },
+    "/document_files/{documentId}": {
+      "schema": { "$ref": "#/entities/DocumentFile" },
+      "description": "Koleksi penyimpanan file atau header chunk berkas asli dokumen di Cloud Firestore"
+    },
+    "/document_files/{documentId}/chunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/DocumentFileChunk" },
+      "description": "Sub-koleksi potongan biner base64 untuk file dokumen berukuran besar (>650KB)"
+    },
+    "/integrations/{integrationId}": {
+      "schema": { "$ref": "#/entities/IntegrationConfig" },
+      "description": "Konfigurasi integrasi GitHub (tanpa token rahasia)"
+    },
+    "/work_programs/{prokerId}": {
+      "schema": { "$ref": "#/entities/WorkProgram" },
+      "description": "Koleksi data program kerja investasi"
+    }
+  }
+}

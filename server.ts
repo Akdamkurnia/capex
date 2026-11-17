@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import multer from 'multer';
 import path from 'path';
@@ -36,10 +37,53 @@ import {
   OgpStatus,
   KategoriRealisasi
 } from './src/types';
+import {
+  getCloudInfo,
+  isCloudConnected,
+  saveDocumentToCloud,
+  getDocumentFileFromCloud,
+  getAllDocumentsFromCloud,
+  getCloudFilesIntegrityMap,
+  deleteDocumentFromCloud
+} from './src/server/firestoreService';
+import {
+  buildGithubAuthorizeUrl,
+  commitDocumentToGithub,
+  createGithubRepository,
+  createOAuthState,
+  deleteDocumentFromGithub,
+  disconnectGithub,
+  exchangeGithubCode,
+  fetchGithubUserProfile,
+  getActiveAccessToken,
+  getGithubCallbackUrl,
+  getGithubStatus,
+  isGithubOAuthConfigured,
+  listGithubFolderContents,
+  listGithubRepositories,
+  saveConnectedGithubAccount,
+  updateGithubRepoConfig,
+  verifyOAuthState
+} from './src/server/githubService';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const isDev = process.env.NODE_ENV !== 'production';
+
+function parseCookieValue(req: Request, cookieName: string): string | undefined {
+  const header = req.headers.cookie;
+  if (!header) return undefined;
+  const parts = header.split(';');
+  for (const part of parts) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    const key = part.slice(0, idx).trim();
+    if (key === cookieName) {
+      return decodeURIComponent(part.slice(idx + 1).trim());
+    }
+  }
+  return undefined;
+}
 
 // Ensure data and uploads directories exist
 const ROOT_DIR = process.cwd();
@@ -193,8 +237,8 @@ function createOfficialPdfBuffer(doc: Partial<InvestmentDocument>): Buffer {
   return Buffer.from(pdf, 'utf-8');
 }
 
-// Ensures a document has a permanent file on disk and in the persistent repository
-export function ensureDocumentFilePersisted(doc: InvestmentDocument): string {
+// Ensures a document has a permanent file on disk (WITHOUT overwriting real uploaded docs with dummy PDFs)
+export function ensureDocumentFilePersisted(doc: InvestmentDocument): string | null {
   // 1. Check existing lokasiPenyimpanan
   if (doc.lokasiPenyimpanan && fs.existsSync(doc.lokasiPenyimpanan)) {
     return doc.lokasiPenyimpanan;
@@ -207,7 +251,7 @@ export function ensureDocumentFilePersisted(doc: InvestmentDocument): string {
     return uploadsTarget;
   }
 
-  // 2. Check permanent file repository
+  // 2. Check permanent file repository (exact match OR `${doc.id}_*` prefix match)
   const repoCandidate = path.join(FILE_REPO_DIR, `${doc.id}_${path.basename(safeOriginalName)}`);
   if (fs.existsSync(repoCandidate)) {
     try {
@@ -216,6 +260,19 @@ export function ensureDocumentFilePersisted(doc: InvestmentDocument): string {
     doc.lokasiPenyimpanan = uploadsTarget;
     return uploadsTarget;
   }
+
+  try {
+    const repoFiles = fs.readdirSync(FILE_REPO_DIR);
+    const prefixMatch = repoFiles.find((f) => f.startsWith(`${doc.id}_`));
+    if (prefixMatch) {
+      const matchedPath = path.join(FILE_REPO_DIR, prefixMatch);
+      try {
+        fs.copyFileSync(matchedPath, uploadsTarget);
+      } catch {}
+      doc.lokasiPenyimpanan = uploadsTarget;
+      return uploadsTarget;
+    }
+  } catch {}
 
   // 3. Check fileStorageMap (Base64)
   if (fileStorageMap[doc.id] && fileStorageMap[doc.id].base64) {
@@ -230,7 +287,12 @@ export function ensureDocumentFilePersisted(doc: InvestmentDocument): string {
     }
   }
 
-  // 4. Generate official PT Pos Indonesia document & persist permanently
+  // CRITICAL: NEVER generate a fake dummy PDF for real uploaded documents!
+  if (doc.isRealFile === true || doc.source === 'google-cloud-firebase') {
+    return null;
+  }
+
+  // 4. Only legacy mock/seed items fall back to generated preview PDF
   const buf = createOfficialPdfBuffer(doc);
   fs.writeFileSync(uploadsTarget, buf);
   try { fs.writeFileSync(repoCandidate, buf); } catch {}
@@ -990,8 +1052,81 @@ app.delete('/api/proker/:id', (req: Request, res: Response) => {
   res.json({ message: 'Program kerja berhasil dihapus', id: req.params.id });
 });
 
+// Shared Cloud Sync Helper (deduplicates concurrent sync calls)
+let cloudSyncPromise: Promise<{ cloudDocsFound: number; newlySynced: number }> | null = null;
+let initialCloudSyncCompleted = false;
+
+async function syncDocumentsFromCloud(force = false): Promise<{ cloudDocsFound: number; newlySynced: number }> {
+  if (cloudSyncPromise) return cloudSyncPromise;
+  if (initialCloudSyncCompleted && !force) {
+    return { cloudDocsFound: db.documents.filter(d => d.isRealFile).length, newlySynced: 0 };
+  }
+
+  cloudSyncPromise = (async () => {
+    try {
+      const [cloudDocs, integrityMap] = await Promise.all([
+        getAllDocumentsFromCloud(),
+        getCloudFilesIntegrityMap()
+      ]);
+
+      let newlySynced = 0;
+      if (cloudDocs && cloudDocs.length > 0) {
+        cloudDocs.forEach((cDoc) => {
+          const integrity = integrityMap.get(cDoc.id);
+          const localExists = !!ensureDocumentFilePersisted(cDoc);
+          const cloudFileStatus: 'complete' | 'missing_chunks' | 'local_only' =
+            integrity === 'complete' ? 'complete' : localExists ? 'local_only' : 'missing_chunks';
+
+          const idx = db.documents.findIndex((d) => d.id === cDoc.id);
+          if (idx === -1) {
+            db.documents.unshift({
+              ...cDoc,
+              isRealFile: true,
+              source: 'google-cloud-firebase',
+              cloudFileStatus
+            });
+            newlySynced++;
+          } else {
+            db.documents[idx] = {
+              ...db.documents[idx],
+              ...cDoc,
+              isRealFile: true,
+              source: 'google-cloud-firebase',
+              cloudFileStatus
+            };
+          }
+        });
+
+        // Sort newest first by upload date / ID timestamp
+        db.documents.sort((a, b) => (b.id || '').localeCompare(a.id || ''));
+        saveDb();
+      } else {
+        // Still annotate local docs integrity
+        db.documents.forEach((d) => {
+          const integrity = integrityMap.get(d.id);
+          if (integrity) {
+            d.cloudFileStatus = integrity;
+          }
+        });
+      }
+
+      initialCloudSyncCompleted = true;
+      return { cloudDocsFound: cloudDocs ? cloudDocs.length : 0, newlySynced };
+    } catch (err: any) {
+      console.warn('[CloudSync] Warning:', err.message);
+      return { cloudDocsFound: 0, newlySynced: 0 };
+    } finally {
+      cloudSyncPromise = null;
+    }
+  })();
+
+  return cloudSyncPromise;
+}
+
 // 3. Document Management
-app.get('/api/documents', (req: Request, res: Response) => {
+app.get('/api/documents', async (req: Request, res: Response) => {
+  await syncDocumentsFromCloud(req.query.refresh === 'true');
+
   const { jenis, prokerId, status, tahun } = req.query;
   let docs = db.documents;
   const prokerYearMap = new Map(db.workPrograms.map(p => [p.id, p.tahunAnggaran]));
@@ -1018,7 +1153,7 @@ app.get('/api/documents/checklist/:prokerId', (req: Request, res: Response) => {
   res.json(checklist);
 });
 
-app.post('/api/documents/upload', upload.single('file'), (req: Request, res: Response) => {
+app.post('/api/documents/upload', upload.single('file'), async (req: Request, res: Response) => {
   const file = req.file;
   const body = req.body;
 
@@ -1063,6 +1198,7 @@ app.post('/api/documents/upload', upload.single('file'), (req: Request, res: Res
   }
 
   const namaDokumen = (body.namaDokumen || '').trim() || file.originalname;
+  const fileBuffer = fs.readFileSync(file.path);
 
   // Check if replacing version or new doc
   if (body.replaceDocId) {
@@ -1092,26 +1228,63 @@ app.post('/api/documents/upload', upload.single('file'), (req: Request, res: Res
       existing.picPengunggah = body.picPengunggah || 'PIC Sistem';
       existing.statusVerifikasi = 'Menunggu Verifikasi';
       existing.catatanReviewer = body.catatan || 'Versi dokumen diperbarui, menunggu verifikasi ulang.';
+      existing.isRealFile = true;
+      existing.source = 'google-cloud-firebase';
+      existing.cloudSyncAt = new Date().toISOString();
+      existing.cloudStorage = 'Google Cloud & Firebase Firestore';
+      existing.cloudFileStatus = 'complete';
       if (body.tahunAnggaran) {
         existing.tahunAnggaran = parseInt(body.tahunAnggaran);
       }
 
-      // Persist permanently in repository and storage map
+      // Upload to Google Cloud & Firebase Firestore FIRST and require success
+      const cloudRes = await saveDocumentToCloud(existing, fileBuffer);
+      if (!cloudRes.success) {
+        try { fs.unlinkSync(file.path); } catch {}
+        return res.status(500).json({
+          error: `Gagal menyimpan berkas ke Google Cloud Storage: ${cloudRes.error || 'Firestore error'}`
+        });
+      }
+      console.log(`[Cloud] Saved updated document ${existing.id} (${existing.nomorDokumen}, chunks=${cloudRes.totalChunks ?? 0}) to Firestore`);
+
+      // Persist local hot cache in FILE_REPO_DIR (only put small files <= 512KB into fileStorageMap JSON)
       try {
-        const fileBuffer = fs.readFileSync(file.path);
         const repoCopy = path.join(FILE_REPO_DIR, `${existing.id}_${file.filename}`);
         fs.writeFileSync(repoCopy, fileBuffer);
-        saveFileStorageRecord({
-          docId: existing.id,
-          fileName: file.filename,
-          originalName: file.originalname,
-          mimeType: file.mimetype || 'application/pdf',
-          size: file.size,
-          base64: fileBuffer.toString('base64'),
-          uploadedAt: new Date().toISOString()
-        });
+        if (file.size <= 512 * 1024) {
+          saveFileStorageRecord({
+            docId: existing.id,
+            fileName: file.filename,
+            originalName: file.originalname,
+            mimeType: file.mimetype || 'application/pdf',
+            size: file.size,
+            base64: fileBuffer.toString('base64'),
+            uploadedAt: new Date().toISOString()
+          });
+        }
       } catch (fErr) {
-        console.error('Error saving uploaded version to repo:', fErr);
+        console.error('Error saving uploaded version to local repo cache:', fErr);
+      }
+
+      // Optionally auto-sync new version to connected GitHub repository folder
+      const ghSid = parseCookieValue(req, 'dalista_gh_sid');
+      const ghStatus = await getGithubStatus(ghSid);
+      if (ghStatus.connected && ghStatus.repoConfig?.repo && ghStatus.repoConfig.autoSyncOnUpload !== false) {
+        const ghRes = await commitDocumentToGithub(existing, fileBuffer, ghSid);
+        if (ghRes.success) {
+          existing.githubRepo = ghRes.githubRepo;
+          existing.githubBranch = ghRes.githubBranch;
+          existing.githubPath = ghRes.githubPath;
+          existing.githubUrl = ghRes.githubUrl;
+          existing.githubSha = ghRes.githubSha;
+          existing.githubSyncedAt = ghRes.githubSyncedAt;
+          existing.githubSyncStatus = 'synced';
+          existing.githubError = undefined;
+          await saveDocumentToCloud(existing);
+        } else if (!ghRes.skipped) {
+          existing.githubSyncStatus = 'error';
+          existing.githubError = ghRes.error;
+        }
       }
 
       db.documents[existingIndex] = existing;
@@ -1119,7 +1292,7 @@ app.post('/api/documents/upload', upload.single('file'), (req: Request, res: Res
         proker.terakhirDiperbarui = new Date().toISOString().substring(0, 10);
       }
       saveDb();
-      logAudit(body.userId, body.userName, body.userRole, 'UPDATE_DOCUMENT_VERSION', 'DOKUMEN', existing.id, `Memperbarui versi dokumen ${existing.nomorDokumen} (${jenis}) ke v${newVersion}`, req);
+      logAudit(body.userId, body.userName, body.userRole, 'UPDATE_DOCUMENT_VERSION', 'DOKUMEN', existing.id, `Memperbarui versi dokumen ${existing.nomorDokumen} (${jenis}) ke v${newVersion} di Cloud Firestore`, req);
 
       return res.json(existing);
     }
@@ -1148,25 +1321,64 @@ app.post('/api/documents/upload', upload.single('file'), (req: Request, res: Res
     ukuranFile: file.size,
     tipeMime: file.mimetype || 'application/pdf',
     fileUrl: `/uploads/${file.filename}`,
-    riwayatVersi: []
+    riwayatVersi: [],
+    isRealFile: true,
+    source: 'google-cloud-firebase',
+    cloudSyncAt: new Date().toISOString(),
+    cloudStorage: 'Google Cloud & Firebase Firestore',
+    cloudFileStatus: 'complete'
   };
 
-  // Persist permanently in file repository and base64 storage map
+  // Upload metadata & binary to Google Cloud & Firebase Firestore FIRST and require success!
+  const cloudRes = await saveDocumentToCloud(newDoc, fileBuffer);
+  if (!cloudRes.success) {
+    try { fs.unlinkSync(file.path); } catch {}
+    return res.status(500).json({
+      error: `Gagal menyimpan berkas ke Google Cloud Firestore: ${cloudRes.error || 'Terjadi kesalahan penyimpanan cloud'}`
+    });
+  }
+  console.log(`[Cloud] Successfully persisted ${newDoc.id} (${newDoc.jenisDokumen}: ${newDoc.namaFileAsli}, chunks=${cloudRes.totalChunks ?? 0}) to Google Cloud & Firebase Firestore!`);
+
+  // Persist local hot cache in FILE_REPO_DIR (avoid bloating file_storage.json with >512KB files)
   try {
-    const fileBuffer = fs.readFileSync(file.path);
     const repoCopy = path.join(FILE_REPO_DIR, `${newDoc.id}_${file.filename}`);
     fs.writeFileSync(repoCopy, fileBuffer);
-    saveFileStorageRecord({
-      docId: newDoc.id,
-      fileName: file.filename,
-      originalName: file.originalname,
-      mimeType: file.mimetype || 'application/pdf',
-      size: file.size,
-      base64: fileBuffer.toString('base64'),
-      uploadedAt: new Date().toISOString()
-    });
+    if (file.size <= 512 * 1024) {
+      saveFileStorageRecord({
+        docId: newDoc.id,
+        fileName: file.filename,
+        originalName: file.originalname,
+        mimeType: file.mimetype || 'application/pdf',
+        size: file.size,
+        base64: fileBuffer.toString('base64'),
+        uploadedAt: new Date().toISOString()
+      });
+    }
   } catch (fErr) {
-    console.error('Error saving uploaded file to repo:', fErr);
+    console.error('Error saving uploaded file to local repo cache:', fErr);
+  }
+
+  // Optionally auto-sync to connected GitHub repository folder
+  const ghSid = parseCookieValue(req, 'dalista_gh_sid');
+  const ghStatus = await getGithubStatus(ghSid);
+  if (ghStatus.connected && ghStatus.repoConfig?.repo && ghStatus.repoConfig.autoSyncOnUpload !== false) {
+    const ghRes = await commitDocumentToGithub(newDoc, fileBuffer, ghSid);
+    if (ghRes.success) {
+      newDoc.githubRepo = ghRes.githubRepo;
+      newDoc.githubBranch = ghRes.githubBranch;
+      newDoc.githubPath = ghRes.githubPath;
+      newDoc.githubUrl = ghRes.githubUrl;
+      newDoc.githubSha = ghRes.githubSha;
+      newDoc.githubSyncedAt = ghRes.githubSyncedAt;
+      newDoc.githubSyncStatus = 'synced';
+      newDoc.githubError = undefined;
+      await saveDocumentToCloud(newDoc);
+      console.log(`[GitHub] Committed ${newDoc.namaFileAsli} -> ${ghRes.githubRepo}/${ghRes.githubPath}`);
+    } else if (!ghRes.skipped) {
+      newDoc.githubSyncStatus = 'error';
+      newDoc.githubError = ghRes.error;
+      console.warn(`[GitHub] Failed auto-sync for ${newDoc.id}: ${ghRes.error}`);
+    }
   }
 
   db.documents.unshift(newDoc);
@@ -1174,51 +1386,423 @@ app.post('/api/documents/upload', upload.single('file'), (req: Request, res: Res
     proker.terakhirDiperbarui = new Date().toISOString().substring(0, 10);
   }
   saveDb();
-  logAudit(body.userId, body.userName, body.userRole, 'UPLOAD_DOCUMENT', 'DOKUMEN', newDoc.id, `Mengunggah dokumen ${newDoc.jenisDokumen}: ${newDoc.nomorDokumen} (${file.originalname})`, req);
+  logAudit(body.userId, body.userName, body.userRole, 'UPLOAD_DOCUMENT', 'DOKUMEN', newDoc.id, `Mengunggah dokumen asli ${newDoc.jenisDokumen}: ${newDoc.nomorDokumen} (${file.originalname}) ke Google Cloud & Firebase Firestore`, req);
 
   res.status(201).json(newDoc);
 });
 
-// Storage status check
-app.get('/api/documents/storage-status', (_req: Request, res: Response) => {
+// Storage status check with Google Cloud & Firebase info
+app.get('/api/documents/storage-status', async (_req: Request, res: Response) => {
+  await syncDocumentsFromCloud();
   const totalDocs = db.documents.length;
   const inRepoCount = Object.keys(fileStorageMap).length;
+  const realDocsCount = db.documents.filter(d => d.isRealFile === true).length;
+  const completeCloudFilesCount = db.documents.filter(d => d.cloudFileStatus === 'complete').length;
+  const missingChunksCount = db.documents.filter(d => d.cloudFileStatus === 'missing_chunks').length;
+  const cloudInfo = getCloudInfo();
+  const cloudActive = await isCloudConnected();
+
   res.json({
     status: 'ACTIVE_AND_PERSISTED',
+    cloudConnected: cloudActive,
+    googleCloudProject: cloudInfo.projectId,
+    firestoreDatabaseId: cloudInfo.databaseId,
     totalDocuments: totalDocs,
+    realDocumentsCount: realDocsCount,
+    completeCloudFilesCount,
+    missingChunksCount,
+    dummyDocumentsCount: totalDocs - realDocsCount,
     persistedInRepository: inRepoCount,
     storageDirectory: FILE_REPO_DIR,
     uploadsDirectory: UPLOADS_DIR,
-    persistenceMethod: 'Dual-Layer (Local File Repository + Persistent In-DB Base64 + PostgreSQL ready)'
+    persistenceMethod: 'Google Cloud & Firebase Firestore (Cloud DB & Document Storage) + Local Hot Cache'
   });
 });
 
-// Download document
-app.get('/api/documents/:id/download', (req: Request, res: Response) => {
-  const doc = db.documents.find(d => d.id === req.params.id);
-  if (!doc) return res.status(404).json({ error: 'Dokumen tidak ditemukan' });
+// Purge mock/seed dummy documents so ONLY genuine uploaded files exist
+app.post('/api/documents/purge-dummies', async (req: Request, res: Response) => {
+  const initialCount = db.documents.length;
+  const toDelete = db.documents.filter(d => {
+    if (d.isRealFile === true) return false;
+    const isMockId = d.id.startsWith('DOC-00') || d.id.startsWith('DOC-22') || d.id.startsWith('DOC-23') || d.id.startsWith('DOC-24') || d.id.startsWith('DOC-25');
+    const isMockName = d.namaFileAsli.toLowerCase().includes('dummy_') || d.namaFileAsli.toLowerCase().includes('test_');
+    return isMockId || isMockName || !fileStorageMap[d.id];
+  });
 
-  const targetPath = ensureDocumentFilePersisted(doc);
-  logAudit(req.query.userId as string, req.query.userName as string, req.query.userRole as any, 'DOWNLOAD_DOCUMENT', 'DOKUMEN', doc.id, `Mengunduh file asli dokumen: ${doc.namaFileAsli}`, req);
+  db.documents = db.documents.filter(d => !toDelete.some(td => td.id === d.id));
+  saveDb();
 
-  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(doc.namaFileAsli)}"`);
-  res.setHeader('Content-Type', doc.tipeMime || 'application/pdf');
-  res.download(targetPath, doc.namaFileAsli);
+  // Also clean up any dummy entries in Firestore if present
+  for (const td of toDelete) {
+    try { await deleteDocumentFromCloud(td.id); } catch {}
+  }
+
+  logAudit(req.body.userId, req.body.userName, req.body.userRole, 'PURGE_DUMMY_DOCUMENTS', 'DOKUMEN', 'ALL_DUMMIES', `Membersihkan dokumen dummy, menyisakan ${db.documents.length} berkas asli di repositori`, req);
+
+  res.json({
+    message: 'Dokumen dummy/sample berhasil dibersihkan dari repositori.',
+    removedCount: initialCount - db.documents.length,
+    remainingCount: db.documents.length,
+    documents: db.documents
+  });
 });
 
-// Preview document (inline)
-app.get('/api/documents/:id/preview', (req: Request, res: Response) => {
+// Sync documents between Firestore and local DB
+app.get('/api/documents/cloud-sync', async (_req: Request, res: Response) => {
+  try {
+    const { cloudDocsFound, newlySynced } = await syncDocumentsFromCloud(true);
+    res.json({
+      success: true,
+      cloudDocsFound,
+      newlySynced,
+      totalLocal: db.documents.length,
+      documents: db.documents
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==================== GITHUB OAUTH & REPOSITORY SYNC ====================
+app.get('/api/github/status', async (req: Request, res: Response) => {
+  try {
+    const sid = parseCookieValue(req, 'dalista_gh_sid');
+    const status = await getGithubStatus(sid);
+    res.json(status);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/auth/github/url', (_req: Request, res: Response) => {
+  const callbackUrl = getGithubCallbackUrl();
+  if (!isGithubOAuthConfigured()) {
+    return res.status(400).json({
+      error: 'GITHUB_OAUTH_NOT_CONFIGURED',
+      message: 'GITHUB_CLIENT_ID dan GITHUB_CLIENT_SECRET belum dikonfigurasi di AI Studio Secrets.',
+      callbackUrl
+    });
+  }
+  const state = createOAuthState();
+  const url = buildGithubAuthorizeUrl(state);
+  res.json({ url, callbackUrl });
+});
+
+const handleGithubOAuthCallback = async (req: Request, res: Response) => {
+  const { code, state, error, error_description } = req.query as Record<string, string | undefined>;
+  if (error) {
+    return res.status(400).send(`
+      <html>
+        <body style="font-family:sans-serif;background:#0b132b;color:#fff;padding:24px;">
+          <h3>Otorisasi GitHub Dibatalkan / Gagal</h3>
+          <p>${error_description || error}</p>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'GITHUB_OAUTH_ERROR', error: ${JSON.stringify(error_description || error)} }, '*');
+            }
+          </script>
+        </body>
+      </html>
+    `);
+  }
+
+  if (!code || !verifyOAuthState(state)) {
+    return res.status(400).send(`
+      <html>
+        <body style="font-family:sans-serif;background:#0b132b;color:#fff;padding:24px;">
+          <h3>Sesi OAuth Tidak Valid atau Kedaluwarsa</h3>
+          <p>Silakan tutup jendela ini dan klik Hubungkan GitHub kembali.</p>
+        </body>
+      </html>
+    `);
+  }
+
+  try {
+    const { accessToken } = await exchangeGithubCode(code);
+    const user = await fetchGithubUserProfile(accessToken);
+    const sid = await saveConnectedGithubAccount(accessToken, user);
+
+    res.cookie('dalista_gh_sid', sid, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'none',
+      maxAge: 30 * 24 * 60 * 60 * 1000
+    });
+
+    res.send(`
+      <html>
+        <body style="font-family:sans-serif;background:#0b132b;color:#e2e8f0;padding:28px;text-align:center;">
+          <h3 style="color:#34d399;">GitHub Berhasil Terhubung!</h3>
+          <p>Akun <strong>${user.login}</strong> (${user.email || 'email terverifikasi'}) telah terhubung ke DALISTA.</p>
+          <p style="font-size:12px;color:#94a3b8;">Jendela ini akan tertutup otomatis...</p>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'GITHUB_OAUTH_SUCCESS', user: ${JSON.stringify(user)} }, '*');
+              window.close();
+            } else {
+              window.location.href = '/';
+            }
+          </script>
+        </body>
+      </html>
+    `);
+  } catch (err: any) {
+    res.status(500).send(`
+      <html>
+        <body style="font-family:sans-serif;background:#0b132b;color:#fca5a5;padding:24px;">
+          <h3>Gagal Menghubungkan GitHub</h3>
+          <p>${err.message || 'Terjadi kesalahan saat menukar token GitHub.'}</p>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'GITHUB_OAUTH_ERROR', error: ${JSON.stringify(err.message || 'OAuth exchange failed')} }, '*');
+            }
+          </script>
+        </body>
+      </html>
+    `);
+  }
+};
+
+app.get(['/auth/github/callback', '/auth/github/callback/'], handleGithubOAuthCallback);
+
+app.post('/api/github/disconnect', async (req: Request, res: Response) => {
+  const sid = parseCookieValue(req, 'dalista_gh_sid');
+  await disconnectGithub(sid);
+  res.clearCookie('dalista_gh_sid', { httpOnly: true, secure: true, sameSite: 'none' });
+  res.json({ success: true });
+});
+
+app.get('/api/github/repos', async (req: Request, res: Response) => {
+  const sid = parseCookieValue(req, 'dalista_gh_sid');
+  const token = getActiveAccessToken(sid);
+  if (!token) {
+    return res.status(401).json({ error: 'Akun GitHub belum terhubung.' });
+  }
+  try {
+    const repos = await listGithubRepositories(token);
+    res.json({ repos });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/github/repos', async (req: Request, res: Response) => {
+  const sid = parseCookieValue(req, 'dalista_gh_sid');
+  const token = getActiveAccessToken(sid);
+  if (!token) {
+    return res.status(401).json({ error: 'Akun GitHub belum terhubung.' });
+  }
+  try {
+    const { name, description, isPrivate, folderPath, organizeByYearType, autoSyncOnUpload } = req.body || {};
+    if (!name) return res.status(400).json({ error: 'Nama repositori wajib diisi.' });
+
+    const created = await createGithubRepository(token, { name, description, isPrivate });
+    const repoConfig = await updateGithubRepoConfig(
+      {
+        owner: created.owner,
+        repo: created.name,
+        branch: created.defaultBranch || 'main',
+        folderPath: folderPath || 'dokumen-investasi-capex',
+        organizeByYearType: organizeByYearType !== false,
+        autoSyncOnUpload: autoSyncOnUpload !== false
+      },
+      sid
+    );
+    res.status(201).json({ repo: created, repoConfig });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/github/config', async (req: Request, res: Response) => {
+  const sid = parseCookieValue(req, 'dalista_gh_sid');
+  try {
+    const updated = await updateGithubRepoConfig(req.body || {}, sid);
+    res.json({ success: true, repoConfig: updated });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/github/folder-files', async (req: Request, res: Response) => {
+  const sid = parseCookieValue(req, 'dalista_gh_sid');
+  try {
+    const result = await listGithubFolderContents(sid);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/documents/:id/sync-github', async (req: Request, res: Response) => {
+  const sid = parseCookieValue(req, 'dalista_gh_sid');
+  await syncDocumentsFromCloud();
+  const idx = db.documents.findIndex((d) => d.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Dokumen tidak ditemukan' });
+
+  const docItem = db.documents[idx];
+  const resolved = await resolveDocumentBuffer(docItem);
+  if (!resolved) {
+    return res.status(404).json({
+      error: 'Isi file dokumen tidak ditemukan di penyimpanan lokal maupun Cloud Firestore. Silakan Upload Ulang terlebih dahulu.'
+    });
+  }
+
+  const ghRes = await commitDocumentToGithub(docItem, resolved.buffer, sid);
+  if (!ghRes.success) {
+    return res.status(400).json({ error: ghRes.error || 'Gagal menyimpan file ke GitHub' });
+  }
+
+  docItem.githubRepo = ghRes.githubRepo;
+  docItem.githubBranch = ghRes.githubBranch;
+  docItem.githubPath = ghRes.githubPath;
+  docItem.githubUrl = ghRes.githubUrl;
+  docItem.githubSha = ghRes.githubSha;
+  docItem.githubSyncedAt = ghRes.githubSyncedAt;
+  docItem.githubSyncStatus = 'synced';
+  docItem.githubError = undefined;
+  db.documents[idx] = docItem;
+  saveDb();
+  await saveDocumentToCloud(docItem);
+
+  res.json({ success: true, document: docItem });
+});
+
+app.post('/api/documents/sync-all-github', async (req: Request, res: Response) => {
+  const sid = parseCookieValue(req, 'dalista_gh_sid');
+  const status = await getGithubStatus(sid);
+  if (!status.connected || !status.repoConfig?.repo) {
+    return res.status(400).json({ error: 'Hubungkan akun GitHub dan pilih repositori tujuan terlebih dahulu.' });
+  }
+
+  await syncDocumentsFromCloud();
+  let syncedCount = 0;
+  let skippedMissingCount = 0;
+  const errors: Array<{ docId: string; fileName: string; error: string }> = [];
+
+  for (let i = 0; i < db.documents.length; i++) {
+    const docItem = db.documents[i];
+    if (docItem.cloudFileStatus === 'missing_chunks') {
+      skippedMissingCount++;
+      continue;
+    }
+    const resolved = await resolveDocumentBuffer(docItem);
+    if (!resolved) {
+      skippedMissingCount++;
+      continue;
+    }
+
+    const ghRes = await commitDocumentToGithub(docItem, resolved.buffer, sid);
+    if (ghRes.success) {
+      docItem.githubRepo = ghRes.githubRepo;
+      docItem.githubBranch = ghRes.githubBranch;
+      docItem.githubPath = ghRes.githubPath;
+      docItem.githubUrl = ghRes.githubUrl;
+      docItem.githubSha = ghRes.githubSha;
+      docItem.githubSyncedAt = ghRes.githubSyncedAt;
+      docItem.githubSyncStatus = 'synced';
+      docItem.githubError = undefined;
+      await saveDocumentToCloud(docItem);
+      syncedCount++;
+    } else {
+      errors.push({
+        docId: docItem.id,
+        fileName: docItem.namaFileAsli,
+        error: ghRes.error || 'Unknown error'
+      });
+    }
+  }
+
+  saveDb();
+  res.json({
+    success: true,
+    syncedCount,
+    skippedMissingCount,
+    errorCount: errors.length,
+    errors,
+    documents: db.documents
+  });
+});
+
+// Helper: Resolve real file bytes (Local Hot Cache -> Cloud Firestore -> Legacy Fallback)
+async function resolveDocumentBuffer(doc: InvestmentDocument): Promise<{ buffer: Buffer; fileName: string; mimeType: string } | null> {
+  // 1. Check local disk hot cache first if present
+  const localPath = ensureDocumentFilePersisted(doc);
+  if (localPath && fs.existsSync(localPath)) {
+    try {
+      const buf = fs.readFileSync(localPath);
+      if (buf.length > 0) {
+        return {
+          buffer: buf,
+          fileName: doc.namaFileAsli,
+          mimeType: doc.tipeMime || 'application/pdf'
+        };
+      }
+    } catch {}
+  }
+
+  // 2. Fetch from Google Cloud & Firebase Firestore
+  try {
+    const cloudFile = await getDocumentFileFromCloud(doc.id);
+    if (cloudFile && cloudFile.buffer && cloudFile.buffer.length > 0) {
+      // Cache locally for instant subsequent access
+      try {
+        const safeName = (doc.namaFileAsli || `${doc.id}.pdf`).replace(/[^a-zA-Z0-9._-]/g, '_');
+        const cachePath = path.join(FILE_REPO_DIR, `${doc.id}_${safeName}`);
+        fs.writeFileSync(cachePath, cloudFile.buffer);
+        doc.lokasiPenyimpanan = cachePath;
+      } catch {}
+      return cloudFile;
+    }
+  } catch (cErr) {
+    console.error('Error fetching file from Firestore:', cErr);
+  }
+
+  return null;
+}
+
+// Download document (genuine bytes from Google Cloud / persistent storage)
+app.get('/api/documents/:id/download', async (req: Request, res: Response) => {
+  await syncDocumentsFromCloud();
   const doc = db.documents.find(d => d.id === req.params.id);
   if (!doc) return res.status(404).json({ error: 'Dokumen tidak ditemukan' });
 
-  const targetPath = ensureDocumentFilePersisted(doc);
-  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(doc.namaFileAsli)}"`);
-  res.setHeader('Content-Type', doc.tipeMime || 'application/pdf');
-  res.sendFile(targetPath);
+  const resolved = await resolveDocumentBuffer(doc);
+  if (!resolved) {
+    return res.status(404).json({
+      error: 'Isi file dokumen tidak ditemukan di Cloud Storage (kemungkinan gagal tersimpan sebelum perbaikan sistem). Silakan upload ulang berkas ini.',
+      code: 'FILE_BINARY_MISSING'
+    });
+  }
+
+  logAudit(req.query.userId as string, req.query.userName as string, req.query.userRole as any, 'DOWNLOAD_DOCUMENT', 'DOKUMEN', doc.id, `Mengunduh file asli dokumen: ${doc.namaFileAsli}`, req);
+
+  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(resolved.fileName || doc.namaFileAsli)}"`);
+  res.setHeader('Content-Type', resolved.mimeType || doc.tipeMime || 'application/pdf');
+  res.send(resolved.buffer);
+});
+
+// Preview document (inline authentic view from Google Cloud / persistent storage)
+app.get('/api/documents/:id/preview', async (req: Request, res: Response) => {
+  await syncDocumentsFromCloud();
+  const doc = db.documents.find(d => d.id === req.params.id);
+  if (!doc) return res.status(404).json({ error: 'Dokumen tidak ditemukan' });
+
+  const resolved = await resolveDocumentBuffer(doc);
+  if (!resolved) {
+    return res.status(404).json({
+      error: 'Isi file dokumen tidak ditemukan di Cloud Storage (kemungkinan gagal tersimpan sebelum perbaikan sistem). Silakan upload ulang berkas ini.',
+      code: 'FILE_BINARY_MISSING'
+    });
+  }
+
+  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(resolved.fileName || doc.namaFileAsli)}"`);
+  res.setHeader('Content-Type', resolved.mimeType || doc.tipeMime || 'application/pdf');
+  res.send(resolved.buffer);
 });
 
 // Update document metadata & verification status
-app.put('/api/documents/:id', (req: Request, res: Response) => {
+app.put('/api/documents/:id', async (req: Request, res: Response) => {
   const index = db.documents.findIndex(d => d.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: 'Dokumen tidak ditemukan' });
 
@@ -1231,24 +1815,52 @@ app.put('/api/documents/:id', (req: Request, res: Response) => {
     statusVerifikasi: body.statusVerifikasi || current.statusVerifikasi,
     catatanReviewer: body.catatanReviewer !== undefined ? body.catatanReviewer : current.catatanReviewer,
     reviewedBy: body.reviewedBy || current.reviewedBy,
-    reviewedAt: body.statusVerifikasi ? new Date().toISOString().substring(0, 10) : current.reviewedAt
+    reviewedAt: body.statusVerifikasi ? new Date().toISOString().substring(0, 10) : current.reviewedAt,
+    cloudSyncAt: new Date().toISOString()
   };
 
   db.documents[index] = updated;
   saveDb();
+
+  // Sync to Google Cloud
+  try {
+    await saveDocumentToCloud(updated);
+  } catch (cErr) {
+    console.error('Error syncing updated doc metadata to Firestore:', cErr);
+  }
+
   logAudit(body.userId, body.userName, body.userRole, 'VERIFY_DOCUMENT', 'DOKUMEN', updated.id, `Status dokumen ${updated.nomorDokumen} diubah menjadi ${updated.statusVerifikasi}`, req);
 
   res.json(updated);
 });
 
 // Delete document
-app.delete('/api/documents/:id', (req: Request, res: Response) => {
+app.delete('/api/documents/:id', async (req: Request, res: Response) => {
   const index = db.documents.findIndex(d => d.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: 'Dokumen tidak ditemukan' });
 
   const deleted = db.documents[index];
   db.documents.splice(index, 1);
+  delete fileStorageMap[req.params.id];
   saveDb();
+
+  // Delete from Google Cloud & Firebase Firestore
+  try {
+    await deleteDocumentFromCloud(req.params.id);
+  } catch (cErr) {
+    console.error('Error deleting doc from Firestore:', cErr);
+  }
+
+  // Delete from GitHub repository folder (best-effort)
+  if (deleted.githubPath && deleted.githubRepo) {
+    try {
+      const ghSid = parseCookieValue(req, 'dalista_gh_sid');
+      await deleteDocumentFromGithub(deleted, ghSid);
+    } catch (ghErr) {
+      console.warn('Error deleting doc from GitHub:', ghErr);
+    }
+  }
+
   logAudit(req.body.userId, req.body.userName, req.body.userRole, 'DELETE_DOCUMENT', 'DOKUMEN', req.params.id, `Menghapus dokumen ${deleted.nomorDokumen} (${deleted.namaFileAsli})`, req);
 
   res.json({ message: 'Dokumen berhasil dihapus' });
@@ -2034,8 +2646,12 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, () => {
+  app.listen(PORT, async () => {
     console.log(`🚀 DALISTA PT Pos Indonesia Server running on port ${PORT}`);
+    const syncRes = await syncDocumentsFromCloud(true);
+    if (syncRes.cloudDocsFound > 0) {
+      console.log(`[Firestore] Synced ${syncRes.cloudDocsFound} cloud documents (newly added: ${syncRes.newlySynced})`);
+    }
   });
 }
 

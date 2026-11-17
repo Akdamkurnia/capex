@@ -94,6 +94,60 @@ export interface InvestmentDocument {
   tipeMime: string;
   fileUrl: string;
   riwayatVersi: DocumentVersion[];
+
+  // Google Cloud & Firebase Persistence
+  isRealFile?: boolean;
+  source?: 'google-cloud-firebase' | 'local' | 'seed';
+  cloudSyncAt?: string;
+  cloudStorage?: string;
+  cloudFileStatus?: 'complete' | 'missing_chunks' | 'local_only';
+
+  // GitHub Repository Persistence
+  githubRepo?: string;
+  githubBranch?: string;
+  githubPath?: string;
+  githubUrl?: string;
+  githubSha?: string;
+  githubSyncedAt?: string;
+  githubSyncStatus?: 'synced' | 'error' | 'pending';
+  githubError?: string;
+}
+
+export interface GitHubUserSummary {
+  login: string;
+  name?: string;
+  email?: string;
+  avatarUrl?: string;
+  profileUrl?: string;
+}
+
+export interface GitHubRepoSummary {
+  id: number;
+  name: string;
+  fullName: string;
+  owner: string;
+  private: boolean;
+  defaultBranch: string;
+  htmlUrl: string;
+  updatedAt?: string;
+}
+
+export interface GitHubRepoConfig {
+  owner: string;
+  repo: string;
+  branch: string;
+  folderPath: string;
+  organizeByYearType: boolean;
+  autoSyncOnUpload: boolean;
+}
+
+export interface GitHubStatusResponse {
+  oauthConfigured: boolean;
+  callbackUrl: string;
+  connected: boolean;
+  user: GitHubUserSummary | null;
+  repoConfig: GitHubRepoConfig | null;
+  updatedAt?: string;
 }
 
 export interface DocumentChecklistSummary {
